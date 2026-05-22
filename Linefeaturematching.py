@@ -23,19 +23,88 @@ import os
 import cv2
 import numpy as np
 
+# # ─────────────────────────────────────────────
+# # 線分統合関数
+# # ─────────────────────────────────────────────
+
+
+# def merge_keylines(keylines, angle_thresh=10.0, dist_thresh=50.0):
+#     """
+#     近接かつほぼ同じ角度の線分を統合する。
+#     angle_thresh: 統合する最大角度差（度）
+#     dist_thresh: 端点間の最大距離（ピクセル）
+#     """
+#     import math
+
+#     def angle_diff(a1, a2):
+#         diff = abs(a1 - a2)
+#         return min(diff, 360 - diff)
+
+#     merged = []
+#     used = [False] * len(keylines)
+
+#     for i, kl1 in enumerate(keylines):
+#         if used[i]:
+#             continue
+#         group = [kl1]
+#         used[i] = True
+#         for j, kl2 in enumerate(keylines):
+#             if i == j or used[j]:
+#                 continue
+#             # 角度差
+#             a1 = math.degrees(kl1.angle)
+#             a2 = math.degrees(kl2.angle)
+#             if angle_diff(a1, a2) > angle_thresh:
+#                 continue
+#             # 端点間距離（どちらかの端点同士が近ければOK）
+#             dists = [
+#                 np.hypot(kl1.startPointX - kl2.startPointX, kl1.startPointY - kl2.startPointY),
+#                 np.hypot(kl1.startPointX - kl2.endPointX, kl1.startPointY - kl2.endPointY),
+#                 np.hypot(kl1.endPointX - kl2.startPointX, kl1.endPointY - kl2.startPointY),
+#                 np.hypot(kl1.endPointX - kl2.endPointX, kl1.endPointY - kl2.endPointY),
+#             ]
+#             if min(dists) > dist_thresh:
+#                 continue
+#             group.append(kl2)
+#             used[j] = True
+#         # グループ内の端点の最遠ペアで新しい線分を作る
+#         xs = [kl.startPointX for kl in group] + [kl.endPointX for kl in group]
+#         ys = [kl.startPointY for kl in group] + [kl.endPointY for kl in group]
+#         idx1 = np.argmin(xs)
+#         idx2 = np.argmax(xs)
+#         new_kl = group[0]  # 代表として最初のKeyLineをコピー
+#         new_kl.startPointX = xs[idx1]
+#         new_kl.startPointY = ys[idx1]
+#         new_kl.endPointX = xs[idx2]
+#         new_kl.endPointY = ys[idx2]
+#         merged.append(new_kl)
+#     return merged
+
+
 # ─────────────────────────────────────────────
 # 初期化
 # ─────────────────────────────────────────────
 
 
-def build_detectors(scale: float = 0.8):
-    """LSDDetector と BinaryDescriptor を生成する。"""
-    lsd_params = cv2.line_descriptor.LSDParam()
-    lsd_params.scale = scale
-    detector = cv2.line_descriptor.LSDDetector_createLSDDetectorWithParams(lsd_params)
-    descriptor = cv2.line_descriptor.BinaryDescriptor_createBinaryDescriptor()
-    matcher = cv2.line_descriptor.BinaryDescriptorMatcher()
-    return detector, descriptor, matcher
+def build_detectors(scale: float = 0.8, detector_type: str = "lsd"):
+    """
+    LSDDetector または EDLinesDetector と BinaryDescriptor を生成する。
+    detector_type: "lsd" または "edlines"
+    """
+    if detector_type == "lsd":
+        lsd_params = cv2.line_descriptor.LSDParam()
+        lsd_params.scale = scale
+        detector = cv2.line_descriptor.LSDDetector_createLSDDetectorWithParams(lsd_params)
+        descriptor = cv2.line_descriptor.BinaryDescriptor_createBinaryDescriptor()
+        matcher = cv2.line_descriptor.BinaryDescriptorMatcher()
+        return detector, descriptor, matcher
+    elif detector_type == "edlines":
+        # EDLinesはOpenCVのKeyLine形式ではないので、ラッパーを使う
+        descriptor = cv2.line_descriptor.BinaryDescriptor_createBinaryDescriptor()
+        matcher = cv2.line_descriptor.BinaryDescriptorMatcher()
+        return "edlines", descriptor, matcher
+    else:
+        raise ValueError("detector_typeは 'lsd' または 'edlines' のみ指定可能です。")
 
 
 # ─────────────────────────────────────────────
@@ -43,35 +112,116 @@ def build_detectors(scale: float = 0.8):
 # ─────────────────────────────────────────────
 
 
-def detect_and_describe(gray: np.ndarray, detector, descriptor, max_lines: int = 200):
+def normalize_line_directions(keylines):
     """
-    グレースケール画像から KeyLine と LBD 記述子を返す。
-
-    Returns
-    -------
-    keylines : list[cv2.line_descriptor.KeyLine]
-    descs    : np.ndarray  shape=(N, 32) dtype=uint8  (None if N==0)
+    線の向きを常に「左から右」（垂直なら「上から下」）に統一する。
+    これを行うことで、LBD記述子の方向依存によるミスマッチを防ぎます。
     """
-    # ─ 検出 ─
-    keylines = detector.detect(gray, scale=2, numOctaves=1, mask=None)
-
-    if not keylines:
-        return [], None
-
-    # スコア降順にソートして上位 max_lines だけ使う
-    keylines = sorted(keylines, key=lambda k: k.response, reverse=True)[:max_lines]
-
-    # octave を明示的に設定（LBD の要件）
     for kl in keylines:
-        kl.octave = 0
+        # 始点が終点より右にある、または垂直で始点が終点より下にある場合、反転
+        if (kl.startPointX > kl.endPointX) or (
+            abs(kl.startPointX - kl.endPointX) < 1e-4 and kl.startPointY > kl.endPointY
+        ):
+            # 始点と終点を入れ替える
+            kl.startPointX, kl.endPointX = kl.endPointX, kl.startPointX
+            kl.startPointY, kl.endPointY = kl.endPointY, kl.startPointY
+            # 角度も180度反転させる
+            kl.angle = kl.angle + np.pi if kl.angle < 0 else kl.angle - np.pi
+    return keylines
 
-    # ─ 記述 ─
-    keylines, descs = descriptor.compute(gray, keylines)
 
-    if descs is None or len(descs) == 0:
-        return [], None
+def detect_and_describe(gray: np.ndarray, detector, descriptor, max_lines: int = 200, detector_type: str = "lsd"):
+    """
+    グレースケール画像から KeyLine と LBD 記述子を返す（向き正規化付き）
+    """
+    if detector_type == "lsd":
+        keylines = detector.detect(gray, scale=2, numOctaves=1, mask=None)
+        if not keylines:
+            return [], None
+        for kl in keylines:
+            if not hasattr(kl, "octave") or kl.octave is None:
+                kl.octave = 0
+        keylines = sorted(keylines, key=lambda k: k.response, reverse=True)[:max_lines]
+        # 向きの正規化
+        keylines = normalize_line_directions(keylines)
+        keylines, descs = descriptor.compute(gray, keylines)
+        if descs is None or len(descs) == 0:
+            return [], None
+        return keylines, descs
 
-    return keylines, descs
+    elif detector_type == "edlines":
+        ed = cv2.ximgproc.createEdgeDrawing()
+        # PythonバインディングではEdgeDrawing_Paramsが使えないためパラメータ設定は省略
+        # ed_params = cv2.ximgproc.EdgeDrawing_Params()
+        # ed_params.MinPathLength = 100
+        # ed_params.MinLineLength = 30
+        # ed_params.PFmode = True
+        # ed_params.NFAValidation = True
+        # ed.setParams(ed_params)
+        ed.detectEdges(gray)
+        lines = ed.detectLines()
+
+        if lines is None or len(lines) == 0:
+            return [], None
+
+        # 長さでフィルタリング＆ソート（長い線を優先）
+        MIN_LENGTH = 30.0  # この値を上げるほど短い線を除外できる
+        candidates = []
+        for l in lines:
+            # lのshapeが(1,4)か(4,)かで分岐
+            if isinstance(l[0], (np.ndarray, list)):
+                x1, y1, x2, y2 = map(float, l[0])
+            else:
+                x1, y1, x2, y2 = map(float, l)
+            length = np.hypot(x2 - x1, y2 - y1)
+            if length >= MIN_LENGTH:
+                candidates.append((length, (x1, y1, x2, y2)))
+
+        # 長い順にソートして上位 max_lines 本だけ使う
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        selected_lines = [c[1] for c in candidates[:max_lines]]
+
+        keylines = []
+        for idx, (x1, y1, x2, y2) in enumerate(selected_lines):
+            dx = x2 - x1
+            dy = y2 - y1
+            length = np.hypot(dx, dy)
+            kl = cv2.line_descriptor.KeyLine()
+            kl.startPointX = x1
+            kl.startPointY = y1
+            kl.endPointX = x2
+            kl.endPointY = y2
+            kl.sPointInOctaveX = x1
+            kl.sPointInOctaveY = y1
+            kl.ePointInOctaveX = x2
+            kl.ePointInOctaveY = y2
+            kl.angle = np.arctan2(dy, dx)
+            kl.lineLength = length
+            kl.numOfPixels = int(length)
+            kl.class_id = idx
+            kl.octave = 0
+            kl.response = length
+            kl.pt = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+            kl.size = length
+            keylines.append(kl)
+
+        if not keylines:
+            return [], None
+
+        keylines = normalize_line_directions(keylines)
+
+        try:
+            keylines, descs = descriptor.compute(gray, keylines)
+        except cv2.error as e:
+            print(f"[WARN] descriptor.compute failed: {e}")
+            return [], None
+
+        if descs is None or len(descs) == 0:
+            return [], None
+
+        return keylines, descs
+    else:
+        raise ValueError("detector_typeは 'lsd' または 'edlines' のみ指定可能です。")
 
 
 # ─────────────────────────────────────────────
@@ -121,10 +271,11 @@ PALETTE = [
 
 
 def draw_matches_side_by_side(
-    frame1: np.ndarray, kl1, frame2: np.ndarray, kl2, matches, max_draw: int = 60
+    frame1: np.ndarray, kl1, frame2: np.ndarray, kl2, matches, max_draw: int = 60, only_matched: bool = False
 ) -> np.ndarray:
     """
     2 フレームを横並びにして、左・右・対応線を別色で描画する。
+    only_matched=Trueの場合は、対応した線分のみ描画する。
     """
     h1, w1 = frame1.shape[:2]
     h2, w2 = frame2.shape[:2]
@@ -137,17 +288,32 @@ def draw_matches_side_by_side(
     color_right = (255, 0, 0)  # 右フレームの線分（青）
     color_match = (0, 165, 255)  # 対応線（オレンジ）
 
-    # 左フレームの線分
-    for kl in kl1:
-        pt1 = (int(kl.startPointX), int(kl.startPointY))
-        pt2 = (int(kl.endPointX), int(kl.endPointY))
-        cv2.line(canvas, pt1, pt2, color_left, 2)
-
-    # 右フレームの線分
-    for kl in kl2:
-        pt1 = (int(kl.startPointX) + w1, int(kl.startPointY))
-        pt2 = (int(kl.endPointX) + w1, int(kl.endPointY))
-        cv2.line(canvas, pt1, pt2, color_right, 2)
+    if only_matched:
+        # マッチした線分のみ描画
+        matched_idx1 = set(m.queryIdx for m in matches[:max_draw])
+        matched_idx2 = set(m.trainIdx for m in matches[:max_draw])
+        # 左フレーム
+        for i in matched_idx1:
+            kl = kl1[i]
+            pt1 = (int(kl.startPointX), int(kl.startPointY))
+            pt2 = (int(kl.endPointX), int(kl.endPointY))
+            cv2.line(canvas, pt1, pt2, color_left, 2)
+        # 右フレーム
+        for i in matched_idx2:
+            kl = kl2[i]
+            pt1 = (int(kl.startPointX) + w1, int(kl.startPointY))
+            pt2 = (int(kl.endPointX) + w1, int(kl.endPointY))
+            cv2.line(canvas, pt1, pt2, color_right, 2)
+    else:
+        # 全線分
+        for kl in kl1:
+            pt1 = (int(kl.startPointX), int(kl.startPointY))
+            pt2 = (int(kl.endPointX), int(kl.endPointY))
+            cv2.line(canvas, pt1, pt2, color_left, 2)
+        for kl in kl2:
+            pt1 = (int(kl.startPointX) + w1, int(kl.startPointY))
+            pt2 = (int(kl.endPointX) + w1, int(kl.endPointY))
+            cv2.line(canvas, pt1, pt2, color_right, 2)
 
     # 対応線（中点同士を結ぶ）
     for i, m in enumerate(matches[:max_draw]):
@@ -264,6 +430,8 @@ def process_video(
     ratio_thresh: float = 0.75,
     max_draw: int = 60,
     resize_width: int = 0,
+    detector_type: str = "lsd",
+    only_matched: bool = False,  # ←追加
 ):
     """映像全体を処理する。"""
 
@@ -297,10 +465,10 @@ def process_video(
     )
 
     csv_writer = MatchCSVWriter(csv_path)
-    detector, descriptor, matcher = build_detectors()
+    detector, descriptor, matcher = build_detectors(detector_type=detector_type)
 
     # フレーム画像出力用ディレクトリ
-    output_dir = "output"
+    output_dir = output_path.split(".")[0]
     os.makedirs(output_dir, exist_ok=True)
 
     # ─ 最初のフレームを読み込み ─
@@ -313,7 +481,7 @@ def process_video(
         prev_frame = cv2.resize(prev_frame, (out_w, out_h))
 
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    prev_kl, prev_desc = detect_and_describe(prev_gray, detector, descriptor, max_lines)
+    prev_kl, prev_desc = detect_and_describe(prev_gray, detector, descriptor, max_lines, detector_type=detector_type)
 
     frame_idx = 1
     total_matches = 0
@@ -329,7 +497,9 @@ def process_video(
             curr_frame = cv2.resize(curr_frame, (out_w, out_h))
 
         curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-        curr_kl, curr_desc = detect_and_describe(curr_gray, detector, descriptor, max_lines)
+        curr_kl, curr_desc = detect_and_describe(
+            curr_gray, detector, descriptor, max_lines, detector_type=detector_type
+        )
 
         matches = match_lines(prev_desc, curr_desc, matcher, ratio_thresh)
         total_matches += len(matches)
@@ -345,6 +515,7 @@ def process_video(
             curr_kl,
             matches,
             max_draw,
+            only_matched=only_matched,  # ←追加
         )
 
         # マッチング線なしの画像も保存
@@ -361,8 +532,8 @@ def process_video(
         cv2.imwrite(frame_path, canvas)
 
         # マッチング線なし画像も保存
-        frame_path_lines = os.path.join(output_dir, f"frame_{frame_idx:05d}_lines.png")
-        cv2.imwrite(frame_path_lines, canvas_lines)
+        # frame_path_lines = os.path.join(output_dir, f"frame_{frame_idx:05d}_lines.png")
+        # cv2.imwrite(frame_path_lines, canvas_lines)
 
         # 進捗表示
         if frame_idx % 30 == 0:
@@ -397,7 +568,7 @@ def process_video(
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="映像から線特徴を検出しフレーム間対応付けを行う (LSD + LBD)")
+    p = argparse.ArgumentParser(description="映像から線特徴を検出しフレーム間対応付けを行う (LSD + LBD or EDLines)")
     p.add_argument("--input", "-i", required=True, help="入力映像パス")
     p.add_argument("--output", "-o", default="", help="出力動画パス (省略時: <input>_line_match.mp4)")
     p.add_argument("--csv", "-c", default="", help="対応情報CSV (省略時: <input>_matches.csv)")
@@ -405,6 +576,10 @@ def parse_args():
     p.add_argument("--ratio_thresh", type=float, default=0.75, help="Lowe ratio test 閾値 (default: 0.75)")
     p.add_argument("--max_draw", type=int, default=60, help="可視化で描画するマッチ数上限 (default: 60)")
     p.add_argument("--resize_width", type=int, default=0, help="リサイズ後の幅px (0=変更なし)")
+    p.add_argument(
+        "--detector", type=str, default="lsd", choices=["lsd", "edlines"], help="線分検出器 (lsd or edlines)"
+    )
+    p.add_argument("--only_matched", action="store_true", help="対応した線分のみ描画する")
     return p.parse_args()
 
 
@@ -423,61 +598,10 @@ def main():
         ratio_thresh=args.ratio_thresh,
         max_draw=args.max_draw,
         resize_width=args.resize_width,
+        detector_type=args.detector,
+        only_matched=args.only_matched,  # ←追加
     )
 
 
 if __name__ == "__main__":
     main()
-
-
-def merge_keylines(keylines, angle_thresh=10.0, dist_thresh=50.0):
-    """
-    近接かつほぼ同じ角度の線分を統合する。
-    angle_thresh: 統合する最大角度差（度）
-    dist_thresh: 端点間の最大距離（ピクセル）
-    """
-    import math
-
-    def angle_diff(a1, a2):
-        diff = abs(a1 - a2)
-        return min(diff, 360 - diff)
-
-    merged = []
-    used = [False] * len(keylines)
-
-    for i, kl1 in enumerate(keylines):
-        if used[i]:
-            continue
-        group = [kl1]
-        used[i] = True
-        for j, kl2 in enumerate(keylines):
-            if i == j or used[j]:
-                continue
-            # 角度差
-            a1 = math.degrees(kl1.angle)
-            a2 = math.degrees(kl2.angle)
-            if angle_diff(a1, a2) > angle_thresh:
-                continue
-            # 端点間距離（どちらかの端点同士が近ければOK）
-            dists = [
-                np.hypot(kl1.startPointX - kl2.startPointX, kl1.startPointY - kl2.startPointY),
-                np.hypot(kl1.startPointX - kl2.endPointX, kl1.startPointY - kl2.endPointY),
-                np.hypot(kl1.endPointX - kl2.startPointX, kl1.endPointY - kl2.startPointY),
-                np.hypot(kl1.endPointX - kl2.endPointX, kl1.endPointY - kl2.endPointY),
-            ]
-            if min(dists) > dist_thresh:
-                continue
-            group.append(kl2)
-            used[j] = True
-        # グループ内の端点の最遠ペアで新しい線分を作る
-        xs = [kl.startPointX for kl in group] + [kl.endPointX for kl in group]
-        ys = [kl.startPointY for kl in group] + [kl.endPointY for kl in group]
-        idx1 = np.argmin(xs)
-        idx2 = np.argmax(xs)
-        new_kl = group[0]  # 代表として最初のKeyLineをコピー
-        new_kl.startPointX = xs[idx1]
-        new_kl.startPointY = ys[idx1]
-        new_kl.endPointX = xs[idx2]
-        new_kl.endPointY = ys[idx2]
-        merged.append(new_kl)
-    return merged

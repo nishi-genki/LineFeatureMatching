@@ -2,3 +2,6 @@ output/
 output-lines/
 env/
 *.mp4
+*.png
+*.jpg
+*.jpeg
