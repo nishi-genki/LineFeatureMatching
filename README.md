@@ -68,42 +68,101 @@ pip install opencv-contrib-python numpy
 ### 基本的な実行
 
 ```bash
-# LSD検出器（デフォルト）
-python line_feature_matching.py --input video.mp4
-
-# EDLines検出器を使用
-python line_feature_matching.py --input video.mp4 --detector edlines
-
-# 出力先を明示的に指定
-python line_feature_matching.py --input video.mp4 --output result.mp4 --csv matches.csv
+python line_feature_matching.py --config config.json
 ```
 
-### オプション一覧
+設定はすべて `config.json` で管理します（後述）。
 
-| オプション | 省略形 | デフォルト | 説明 |
-|---|---|---|---|
-| `--input` | `-i` | （必須） | 入力動画のパス |
-| `--output` | `-o` | `<入力名>_line_match.mp4` | 出力動画のパス |
-| `--csv` | `-c` | `<入力名>_matches.csv` | 対応情報CSVのパス |
-| `--max_lines` | | `200` | フレームあたりの最大検出線分数 |
-| `--ratio_thresh` | | `0.75` | Lowe's ratio test の閾値（小さいほど厳しい） |
-| `--max_draw` | | `60` | 可視化に描画するマッチ数の上限 |
-| `--resize_width` | | `0`（変更なし） | 処理前にリサイズする幅（px） |
-| `--detector` | | `lsd` | 線分検出器の選択（`lsd` または `edlines`） |
-| `--only_matched` | | `False` | 対応が取れた線分のみを描画するフラグ |
+---
 
-### 実行例
+## config.json リファレンス
 
-```bash
-# 解像度を半分にしてEDLinesで処理
-python line_feature_matching.py --input video.mp4 --detector edlines --resize_width 960
+すべてのパラメータは JSON ファイルで指定します。未指定のキーはデフォルト値で補完されます。
 
-# 検出数を増やしてマッチングを厳しくする
-python line_feature_matching.py --input video.mp4 --max_lines 300 --ratio_thresh 0.65
-
-# 対応線のみ描画（ノイズ抑制）
-python line_feature_matching.py --input video.mp4 --only_matched
+```json
+{
+    "io": {
+        "input":        "video.mp4",
+        "output":       "",
+        "csv":          "",
+        "fallback_fps": 30.0
+    },
+    "detection": {
+        "detector":         "lsd",
+        "max_lines":        200,
+        "resize_width":     0,
+        "lsd_octave_scale": 2,
+        "lsd_num_octaves":  1
+    },
+    "descriptor": {
+        "lsd_scale":          0.8,
+        "edlines_min_length": 30.0
+    },
+    "matching": {
+        "ratio_thresh": 0.75
+    },
+    "visualization": {
+        "max_draw":        60,
+        "only_matched":    false,
+        "line_thickness":  2,
+        "match_thickness": 1,
+        "text_font_scale": 0.6,
+        "text_thickness":  1
+    },
+    "geometry": {
+        "vertical_epsilon": 1e-4
+    }
+}
 ```
+
+### `io` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `input` | （必須） | 入力動画のパス |
+| `output` | `<入力名>_line_match.mp4` | 出力動画のパス（空欄で自動生成） |
+| `csv` | `<入力名>_matches.csv` | 対応情報CSVのパス（空欄で自動生成） |
+| `fallback_fps` | `30.0` | FPS取得失敗時のフォールバック値 |
+
+### `detection` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `detector` | `"lsd"` | 線分検出器の選択（`"lsd"` または `"edlines"`） |
+| `max_lines` | `200` | フレームあたりの最大検出線分数 |
+| `resize_width` | `0` | 処理前にリサイズする幅（px）。`0` で変更なし |
+| `lsd_octave_scale` | `2` | LSD検出時のピラミッドスケール |
+| `lsd_num_octaves` | `1` | LSD検出時のオクターブ数 |
+
+### `descriptor` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `lsd_scale` | `0.8` | LSDParam のスケール |
+| `edlines_min_length` | `30.0` | EDLines使用時の最小線分長（px） |
+
+### `matching` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `ratio_thresh` | `0.75` | Lowe's ratio test の閾値（小さいほど厳しい） |
+
+### `visualization` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `max_draw` | `60` | 可視化に描画するマッチ数の上限 |
+| `only_matched` | `false` | 対応が取れた線分のみ描画するフラグ |
+| `line_thickness` | `2` | 検出線分の描画太さ（px） |
+| `match_thickness` | `1` | 対応線の描画太さ（px） |
+| `text_font_scale` | `0.6` | 情報テキストのフォントサイズ |
+| `text_thickness` | `1` | 情報テキストの線幅 |
+
+### `geometry` セクション
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `vertical_epsilon` | `1e-4` | 垂直線判定の許容誤差（ε） |
 
 ---
 
@@ -116,16 +175,15 @@ python line_feature_matching.py --input video.mp4 --only_matched
 - 左フレーム：緑の線分（前フレーム）
 - 右フレーム：青の線分（現フレーム）
 - オレンジの線：対応線（両フレームの線分中点を結ぶ）
-- 右上にフレーム番号・検出数・マッチ数のテキスト表示
+- 左上に検出線分数・マッチ数のテキスト表示
 
 ### フレーム画像（output/ フォルダ）
 
-各フレームペアを2種類のPNG画像として保存します。
+各フレームペアを PNG 画像として保存します。
 
 | ファイル名 | 内容 |
 |---|---|
 | `frame_XXXXX.png` | 対応線つきの可視化画像 |
-| `frame_XXXXX_lines.png` | 検出線分のみの画像（対応線なし） |
 
 ### CSV（matches.csv）
 
@@ -151,25 +209,24 @@ python line_feature_matching.py --input video.mp4 --only_matched
 OpenCVの `LSDDetector` を使用します。精度が高く、長い線分を安定して検出できます。
 **向いているシーン**: 建物・インフラ・人工構造物など直線が明確な映像
 
+LSD固有のパラメータは `detection` および `descriptor` セクションで調整できます。
+
+| パラメータ | キー | 目安 | 効果 |
+|---|---|---|---|
+| ピラミッドスケール | `lsd_octave_scale` | `1`〜`4` | 大きいほど粗い解像度で検出 |
+| オクターブ数 | `lsd_num_octaves` | `1`〜`3` | 大きいほど多スケールで検出 |
+| LSDスケール | `lsd_scale` | `0.5`〜`1.0` | 大きいほど細かい線まで検出 |
+
 ### EDLines
 
-`cv2.ximgproc.createEdgeDrawing()` を使用します。LSDより高速ですが、短い線分が多く検出される傾向があります。**向いているシーン**: リアルタイム処理が必要な場合、またはエッジが豊富なシーン
+`cv2.ximgproc.createEdgeDrawing()` を使用します。LSDより高速ですが、短い線分が多く検出される傾向があります。
+**向いているシーン**: リアルタイム処理が必要な場合、またはエッジが豊富なシーン
 
-#### EDLinesのパラメータ調整（コード内）
+長い線分を優先したい場合は `edlines_min_length` を大きくしてください。
 
-長い線分を優先したい場合、`detect_and_describe` 内の以下の値を変更してください。
-
-```python
-MIN_LENGTH = 30.0  # この値を大きくすると短い線が除外される（例：80.0）
-```
-
-| パラメータ | 目安 | 効果 |
-|---|---|---|
-| `MinPathLength` | 100〜200 | エッジチェーンの最小画素数（大きいほど短いエッジを除外） |
-| `MinLineLength` | 30〜60 | 線分として認める最小長（px） |
-| `PFmode` | `True` | 隣接する短い線分を長い線にまとめる |
-| `NFAValidation` | `True` | 偽検出を統計的に抑制 |
-| `MIN_LENGTH` | 50〜100 | 最終的な長さフィルタ（解像度に合わせて調整） |
+| パラメータ | キー | 目安 | 効果 |
+|---|---|---|---|
+| 最小線分長 | `edlines_min_length` | `30`〜`100` | 大きくすると短い線が除外される |
 
 ---
 
@@ -177,7 +234,7 @@ MIN_LENGTH = 30.0  # この値を大きくすると短い線が除外される�
 
 ### 線分の向き正規化（`normalize_line_directions`）
 
-LBD記述子は線分の向きに依存するため、始点・終点が逆向きに検出されるとミスマッチが増えます。本ツールでは全線分を「左→右（垂直なら上→下）」に統一することで、この問題を軽減しています。
+LBD記述子は線分の向きに依存するため、始点・終点が逆向きに検出されるとミスマッチが増えます。本ツールでは全線分を「左→右（垂直なら上→下）」に統一することで、この問題を軽減しています。垂直判定の許容誤差は `geometry.vertical_epsilon` で調整できます。
 
 ### Lowe's ratio test（`match_lines`）
 
@@ -189,9 +246,9 @@ kNN（k=2）で候補マッチを取得し、最近傍距離が2番目の近傍�
 
 高解像度映像（1080p以上）では処理が重くなりがちです。以下の対処が有効です。
 
-- `--resize_width 960` などでリサイズして処理する
-- `--max_lines 100` で検出数を抑える
-- `--detector edlines` に切り替える（LSDより高速）
+- `resize_width: 960` などでリサイズして処理する
+- `max_lines: 100` で検出数を抑える
+- `detector: "edlines"` に切り替える（LSDより高速）
 - フレームレートの高い動画は事前に間引きしておく
 
 ---

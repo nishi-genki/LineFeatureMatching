@@ -6,3 +6,8 @@ env/
 *.jpg
 *.jpeg
 *.csv
+.zip
+
+lsd/
+edlines/
+16_lines_match/
