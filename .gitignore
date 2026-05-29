@@ -1,12 +1,11 @@
 output/
-output-lines/
 env/
 *.mp4
 *.png
 *.jpg
 *.jpeg
 *.csv
-.zip
+.*zip
 
 lsd/
 edlines/

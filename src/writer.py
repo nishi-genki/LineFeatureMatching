@@ -1,0 +1,156 @@
+"""
+writer.py
+=========
+可視化フレームの生成と対応情報のCSV書き込み。
+"""
+
+import csv
+
+import cv2
+import numpy as np
+
+# ─────────────────────────────────────────────
+# 可視化
+# ─────────────────────────────────────────────
+
+
+def draw_matches_side_by_side(frame1, kl1, frame2, kl2, matches, cfg: dict) -> np.ndarray:
+    """2 フレームを横並びにして線分と対応線を描画する。"""
+    vis_cfg = cfg["visualization"]
+    max_draw        = vis_cfg["max_draw"]
+    only_matched    = vis_cfg["only_matched"]
+    line_thickness  = vis_cfg["line_thickness"]
+    match_thickness = vis_cfg["match_thickness"]
+    text_font_scale = vis_cfg["text_font_scale"]
+    text_thickness  = vis_cfg["text_thickness"]
+
+    h1, w1 = frame1.shape[:2]
+    h2, w2 = frame2.shape[:2]
+    h = max(h1, h2)
+    canvas = np.zeros((h, w1 + w2, 3), dtype=np.uint8)
+    canvas[:h1, :w1] = frame1
+    canvas[:h2, w1:] = frame2
+
+    color_left  = (0, 255, 0)
+    color_right = (255, 0, 0)
+    color_match = (0, 165, 255)
+
+    if only_matched:
+        matched_idx1 = {m.queryIdx for m in matches[:max_draw]}
+        matched_idx2 = {m.trainIdx for m in matches[:max_draw]}
+        for i in matched_idx1:
+            kl = kl1[i]
+            cv2.line(
+                canvas,
+                (int(kl.startPointX), int(kl.startPointY)),
+                (int(kl.endPointX), int(kl.endPointY)),
+                color_left,
+                line_thickness,
+            )
+        for i in matched_idx2:
+            kl = kl2[i]
+            cv2.line(
+                canvas,
+                (int(kl.startPointX) + w1, int(kl.startPointY)),
+                (int(kl.endPointX) + w1, int(kl.endPointY)),
+                color_right,
+                line_thickness,
+            )
+    else:
+        for kl in kl1:
+            cv2.line(
+                canvas,
+                (int(kl.startPointX), int(kl.startPointY)),
+                (int(kl.endPointX), int(kl.endPointY)),
+                color_left,
+                line_thickness,
+            )
+        for kl in kl2:
+            cv2.line(
+                canvas,
+                (int(kl.startPointX) + w1, int(kl.startPointY)),
+                (int(kl.endPointX) + w1, int(kl.endPointY)),
+                color_right,
+                line_thickness,
+            )
+
+    for m in matches[:max_draw]:
+        kl_a, kl_b = kl1[m.queryIdx], kl2[m.trainIdx]
+        mid_a = (
+            (int(kl_a.startPointX) + int(kl_a.endPointX)) // 2,
+            (int(kl_a.startPointY) + int(kl_a.endPointY)) // 2,
+        )
+        mid_b = (
+            (int(kl_b.startPointX) + int(kl_b.endPointX)) // 2 + w1,
+            (int(kl_b.startPointY) + int(kl_b.endPointY)) // 2,
+        )
+        cv2.line(canvas, mid_a, mid_b, color_match, match_thickness, cv2.LINE_AA)
+
+    info = f"Frame pair | Lines: {len(kl1)} / {len(kl2)} | Matches: {len(matches)}"
+    cv2.putText(
+        canvas,
+        info,
+        (10, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        text_font_scale,
+        (255, 255, 255),
+        text_thickness,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
+# ─────────────────────────────────────────────
+# CSV ライター
+# ─────────────────────────────────────────────
+
+
+class MatchCSVWriter:
+    HEADER = [
+        "frame_idx",
+        "match_rank",
+        "distance",
+        "kl1_sx",
+        "kl1_sy",
+        "kl1_ex",
+        "kl1_ey",
+        "kl1_angle",
+        "kl1_length",
+        "kl2_sx",
+        "kl2_sy",
+        "kl2_ex",
+        "kl2_ey",
+        "kl2_angle",
+        "kl2_length",
+    ]
+
+    def __init__(self, path: str):
+        self._f = open(path, "w", newline="", encoding="utf-8")
+        self._w = csv.writer(self._f)
+        self._w.writerow(self.HEADER)
+
+    def write(self, frame_idx: int, kl1, kl2, matches):
+        for rank, m in enumerate(matches):
+            a, b = kl1[m.queryIdx], kl2[m.trainIdx]
+            self._w.writerow(
+                [
+                    frame_idx,
+                    rank,
+                    m.distance,
+                    f"{a.startPointX:.2f}",
+                    f"{a.startPointY:.2f}",
+                    f"{a.endPointX:.2f}",
+                    f"{a.endPointY:.2f}",
+                    f"{a.angle:.4f}",
+                    f"{a.lineLength:.2f}",
+                    f"{b.startPointX:.2f}",
+                    f"{b.startPointY:.2f}",
+                    f"{b.endPointX:.2f}",
+                    f"{b.endPointY:.2f}",
+                    f"{b.angle:.4f}",
+                    f"{b.lineLength:.2f}",
+                ]
+            )
+
+    def close(self):
+        self._f.close()

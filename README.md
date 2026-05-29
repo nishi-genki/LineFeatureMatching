@@ -1,4 +1,4 @@
-# line_feature_matching.py
+# line_feature_matching
 
 映像の各フレームから線特徴を検出し、隣接フレーム間で対応付けを行うツールです。
 
@@ -63,26 +63,55 @@ pip install opencv-contrib-python numpy
 
 ---
 
+## ディレクトリ構成
+
+```
+project/
+├── src/
+│   ├── main.py        # CLI・設定読み込み・処理パイプライン
+│   ├── detector.py    # 線分検出・向き正規化・記述子計算
+│   ├── matcher.py     # Lowe's ratio test によるマッチング
+│   └── writer.py      # 可視化描画・CSV書き込み
+├── config/
+│   └── config.json    # 設定ファイル
+├── video/
+│   └── (入力動画をここに置く)
+└── output/            # 実行時に自動作成
+    ├── <stem>_line_match.mp4
+    ├── <stem>_matches.csv
+    └── <stem>_line_match_frames/
+        ├── frame_00001.png
+        └── ...
+```
+
+---
+
 ## 使い方
 
 ### 基本的な実行
 
+プロジェクトルートから以下のコマンドで実行します。
+
 ```bash
-python line_feature_matching.py --config config.json
+python src/main.py --config config/config.json
 ```
 
-設定はすべて `config.json` で管理します（後述）。
+`--config` を省略した場合は `config/config.json` が使用されます。
+
+```bash
+python src/main.py
+```
 
 ---
 
 ## config.json リファレンス
 
-すべてのパラメータは JSON ファイルで指定します。未指定のキーはデフォルト値で補完されます。
+すべてのパラメータは `config/config.json` で指定します。未指定のキーはデフォルト値で補完されます。
 
 ```json
 {
     "io": {
-        "input":        "video.mp4",
+        "input":        "video/16.mp4",
         "output":       "",
         "csv":          "",
         "fallback_fps": 30.0
@@ -119,9 +148,9 @@ python line_feature_matching.py --config config.json
 
 | キー | デフォルト | 説明 |
 |---|---|---|
-| `input` | （必須） | 入力動画のパス |
-| `output` | `<入力名>_line_match.mp4` | 出力動画のパス（空欄で自動生成） |
-| `csv` | `<入力名>_matches.csv` | 対応情報CSVのパス（空欄で自動生成） |
+| `input` | （必須） | 入力動画のパス（例: `video/16.mp4`） |
+| `output` | `output/<入力名>_line_match.mp4` | 出力動画のパス（空欄で自動生成） |
+| `csv` | `output/<入力名>_matches.csv` | 対応情報CSVのパス（空欄で自動生成） |
 | `fallback_fps` | `30.0` | FPS取得失敗時のフォールバック値 |
 
 ### `detection` セクション
@@ -168,6 +197,21 @@ python line_feature_matching.py --config config.json
 
 ## 出力ファイル
 
+すべての出力は `output/` ディレクトリに保存されます。`output/` は実行時に自動作成されます。
+`io.output` / `io.csv` を空欄にした場合、入力動画のステム名から以下のパスが自動生成されます。
+
+```
+output/
+├── <stem>_line_match.mp4          # 出力動画
+├── <stem>_matches.csv             # 対応情報CSV
+└── <stem>_line_match_frames/      # フレーム画像フォルダ
+    ├── frame_00001.png
+    ├── frame_00002.png
+    └── ...
+```
+
+出力先を明示したい場合は `io.output` / `io.csv` にパスを指定してください。親ディレクトリが存在しない場合も自動で作成されます。
+
 ### 動画（mp4）
 
 横並び2フレームに検出線分と対応線を描画した動画。
@@ -177,15 +221,15 @@ python line_feature_matching.py --config config.json
 - オレンジの線：対応線（両フレームの線分中点を結ぶ）
 - 左上に検出線分数・マッチ数のテキスト表示
 
-### フレーム画像（output/ フォルダ）
+### フレーム画像（`<stem>_line_match_frames/`）
 
-各フレームペアを PNG 画像として保存します。
+各フレームペアの可視化画像を PNG で保存します。
 
 | ファイル名 | 内容 |
 |---|---|
 | `frame_XXXXX.png` | 対応線つきの可視化画像 |
 
-### CSV（matches.csv）
+### CSV
 
 フレームペアごとのマッチング結果を1行1マッチで記録します。
 
@@ -260,5 +304,5 @@ kNN（k=2）で候補マッチを取得し、最近傍距離が2番目の近傍�
 - 出力動画は `mp4v` コーデックを使用します。環境によっては再生できない場合があるため、その場合はffmpegでH.264に変換してください。
 
 ```bash
-ffmpeg -i output.mp4 -vcodec libx264 output_h264.mp4
+ffmpeg -i output/<stem>_line_match.mp4 -vcodec libx264 output/<stem>_line_match_h264.mp4
 ```
