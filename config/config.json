@@ -9,13 +9,16 @@
     "detector": "lsd",
     "max_lines": 200,
     "resize_width": 0,
-    "lsd_octave_scale": 2,
-    "lsd_num_octaves": 1
+    "lsd": {
+      "octave_scale": 2,
+      "num_octaves": 1,
+      "scale": 0.8
+    },
+    "edlines": {
+      "min_length": 30
+    }
   },
-  "descriptor": {
-    "lsd_scale": 0.8,
-    "edlines_min_length": 30
-  },
+  "descriptor": {},
   "matching": {
     "ratio_thresh": 0.75
   },

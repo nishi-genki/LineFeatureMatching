@@ -25,30 +25,10 @@ from writer import MatchCSVWriter, draw_matches_side_by_side
 
 def load_config(config_path: str) -> dict:
     """
-    JSON 設定ファイルを読み込み、デフォルト値で補完して返す。
-
-    JSON の構造:
-        {
-            "io":            { "input", "output", "csv", "fallback_fps" },
-            "detection":     { "detector", "max_lines", "resize_width",
-                               "lsd_octave_scale", "lsd_num_octaves" },
-            "descriptor":    { "lsd_scale", "edlines_min_length" },
-            "matching":      { "ratio_thresh" },
-            "visualization": { "max_draw", "only_matched", "line_thickness",
-                               "match_thickness", "text_font_scale", "text_thickness" },
-            "geometry":      { "vertical_epsilon" }
-        }
-
-    Parameters
-    ----------
-    config_path : str
-        設定ファイルのパス。
-
-    Returns
-    -------
-    dict
-        確定済みパラメータ辞書（ネスト構造を保持）。
+    JSON 設定ファイルを読み込み、ネスト形式のデフォルト値で補完して返す。
+    期待する構造は config/config.json の例（detection.lsd, detection.edlines など）に従う。
     """
+
     defaults = {
         "io": {
             "input": "",
@@ -60,16 +40,11 @@ def load_config(config_path: str) -> dict:
             "detector": "lsd",
             "max_lines": 200,
             "resize_width": 0,
-            "lsd_octave_scale": 2,
-            "lsd_num_octaves": 1,
+            "lsd": {"octave_scale": 2, "num_octaves": 1, "scale": 0.8},
+            "edlines": {"min_length": 30},
         },
-        "descriptor": {
-            "lsd_scale": 0.8,
-            "edlines_min_length": 30.0,
-        },
-        "matching": {
-            "ratio_thresh": 0.75,
-        },
+        "descriptor": {},
+        "matching": {"ratio_thresh": 0.75},
         "visualization": {
             "max_draw": 60,
             "only_matched": False,
@@ -78,33 +53,37 @@ def load_config(config_path: str) -> dict:
             "text_font_scale": 0.6,
             "text_thickness": 1,
         },
-        "geometry": {
-            "vertical_epsilon": 1e-4,
-        },
+        "geometry": {"vertical_epsilon": 1e-4},
     }
+
+    def deep_merge(a: dict, b: dict) -> dict:
+        """b の値で a を再帰的に上書きして返す（非破壊）。"""
+        out = {**a}
+        for k, v in b.items():
+            if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+                out[k] = deep_merge(out[k], v)
+            else:
+                out[k] = v
+        return out
 
     with open(config_path, "r", encoding="utf-8") as f:
         user_cfg = json.load(f)
 
-    # セクションごとにデフォルト値で補完
-    cfg = {}
-    for section, default_values in defaults.items():
-        cfg[section] = {**default_values, **user_cfg.get(section, {})}
+    cfg = deep_merge(defaults, user_cfg)
 
-    # 必須チェック
-    if not cfg["io"]["input"]:
+    # 入力必須チェック
+    if not cfg["io"].get("input"):
         print("[ERROR] config.json の io.input を指定してください。", file=sys.stderr)
         sys.exit(1)
 
-    # output ディレクトリを確保
+    # 出力パスの自動生成
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
-    # output / csv が空なら input のステム名から自動生成（output/ 配下）
     stem = Path(cfg["io"]["input"]).stem
-    if not cfg["io"]["output"]:
+    if not cfg["io"].get("output"):
         cfg["io"]["output"] = str(output_dir / f"{stem}_line_match.mp4")
-    if not cfg["io"]["csv"]:
+    if not cfg["io"].get("csv"):
         cfg["io"]["csv"] = str(output_dir / f"{stem}_matches.csv")
 
     return cfg
@@ -119,15 +98,12 @@ def process_video(cfg: dict):
     """映像全体を処理する。"""
     io_cfg = cfg["io"]
     det_cfg = cfg["detection"]
-    vis_cfg = cfg["visualization"]
     mat_cfg = cfg["matching"]
 
     input_path = io_cfg["input"]
     output_path = io_cfg["output"]
     csv_path = io_cfg["csv"]
     resize_width = det_cfg["resize_width"]
-    max_draw = vis_cfg["max_draw"]
-    only_matched = vis_cfg["only_matched"]
     ratio_thresh = mat_cfg["ratio_thresh"]
 
     cap = cv2.VideoCapture(input_path)

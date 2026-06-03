@@ -5,7 +5,7 @@ env/
 *.jpg
 *.jpeg
 *.csv
-.*zip
+*.zip
 
 lsd/
 edlines/
