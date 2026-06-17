@@ -14,8 +14,13 @@ import numpy as np
 # ─────────────────────────────────────────────
 
 
-def draw_matches_side_by_side(frame1, kl1, frame2, kl2, matches, cfg: dict) -> np.ndarray:
-    """2 フレームを横並びにして線分と対応線を描画する。"""
+def draw_matches_side_by_side(
+    frame1, kl1, frame2, kl2, matches, cfg: dict,
+    proj_lines1: list | None = None,
+    proj_lines2: list | None = None,
+) -> np.ndarray:
+    """2 フレームを横並びにして線分と対応線を描画する。
+    proj_lines1/2: [(pt1, pt2), ...] 形式の投影3D線分（省略可）。"""
     vis_cfg = cfg["visualization"]
     max_draw        = vis_cfg["max_draw"]
     only_matched    = vis_cfg["only_matched"]
@@ -85,6 +90,23 @@ def draw_matches_side_by_side(frame1, kl1, frame2, kl2, matches, cfg: dict) -> n
             (int(kl_b.startPointY) + int(kl_b.endPointY)) // 2,
         )
         cv2.line(canvas, mid_a, mid_b, color_match, match_thickness, cv2.LINE_AA)
+
+    # 投影3D線分を描画（両フレームそれぞれに）
+    proj_cfg = cfg.get("projection", {})
+    proj_color = tuple(proj_cfg.get("color", [0, 0, 255]))
+    proj_thick = proj_cfg.get("thickness", 2)
+
+    for pl in (proj_lines1 or []):
+        u1, v1 = pl.pt1_2d
+        u2, v2 = pl.pt2_2d
+        cv2.line(canvas, (int(u1), int(v1)), (int(u2), int(v2)),
+                 proj_color, proj_thick, cv2.LINE_AA)
+
+    for pl in (proj_lines2 or []):
+        u1, v1 = pl.pt1_2d
+        u2, v2 = pl.pt2_2d
+        cv2.line(canvas, (int(u1) + w1, int(v1)), (int(u2) + w1, int(v2)),
+                 proj_color, proj_thick, cv2.LINE_AA)
 
     info = f"Frame pair | Lines: {len(kl1)} / {len(kl2)} | Matches: {len(matches)}"
     cv2.putText(

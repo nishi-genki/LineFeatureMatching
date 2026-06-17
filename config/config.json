@@ -1,7 +1,7 @@
 {
   "io": {
-    "input": "video/16.mp4",
-    "output": "",
+    "input": "video/1.mp4",
+    "output": "output/lsd_parameter.mp4",
     "csv": "",
     "fallback_fps": 30
   },
@@ -12,10 +12,13 @@
     "lsd": {
       "octave_scale": 2,
       "num_octaves": 1,
-      "scale": 0.8
+      "scale": 0.8,
+      "density_th": 0.5
     },
     "edlines": {
-      "min_length": 30
+      "min_length": 30,
+      "LineFitErrorThreshold": 2.0,
+      "MaxDistanceBetweenTwoLines": 10.0
     }
   },
   "descriptor": {},
@@ -32,5 +35,30 @@
   },
   "geometry": {
     "vertical_epsilon": 0.0001
+  },
+  "camera": {
+    "fx": 1312.886,
+    "fy": 1314.631,
+    "cx": 969.339,
+    "cy": 535.420,
+    "dist": [0.22213989492998, -0.81727621570883, -0.00263513431066, 0.00197663686947, 1.02778002212845],
+    "width": 1920,
+    "height": 1080
+  },
+  "projection": {
+    "enable": true,
+    "lines3d_csv": "data/lines3d.csv",
+    "marker_jpg": "markers/marker-07.jpg",
+    "marker_dat": "markers/marker-07.dat",
+    "marker_ratio": 0.75,
+    "marker_min_matches": 8,
+    "color": [0, 0, 0],
+    "thickness": 5
+  },
+  "line_matching": {
+    "angle_th_deg": 10.0,
+    "dist_th": 60.0,
+    "overlap_th": 0.2,
+    "min_lines": 3
   }
 }

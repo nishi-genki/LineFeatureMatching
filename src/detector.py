@@ -25,14 +25,25 @@ def build_detectors(cfg: dict):
         # LSDParam.scale は LSD の記述子スケール（config の lsd.scale）
         lsd_params = cv2.line_descriptor.LSDParam()
         lsd_params.scale = lsd_cfg["scale"]
+        lsd_params.density_th = lsd_cfg["density_th"]
         detector = cv2.line_descriptor.LSDDetector_createLSDDetectorWithParams(lsd_params)
         descriptor = cv2.line_descriptor.BinaryDescriptor_createBinaryDescriptor()
         matcher = cv2.line_descriptor.BinaryDescriptorMatcher()
         return detector, descriptor, matcher
     elif detector_type == "edlines":
+        detector = cv2.ximgproc.createEdgeDrawing()
+        edlines_cfg = cfg["detection"]["edlines"]
+
+        params = detector.Params()
+        params.LineFitErrorThreshold = edlines_cfg["LineFitErrorThreshold"]
+        params.MaxDistanceBetweenTwoLines = edlines_cfg["MaxDistanceBetweenTwoLines"]
+        # params.MaxErrorThreshold = 2.0  # デフォルト1.3 → 延長許容誤差を緩める
+        # params.EdgeDetectionOperator = cv2.ximgproc.EdgeDrawing_SCHARR  # 精度の高いオペレータ
+
+        detector.setParams(params)
         descriptor = cv2.line_descriptor.BinaryDescriptor_createBinaryDescriptor()
         matcher = cv2.line_descriptor.BinaryDescriptorMatcher()
-        return "edlines", descriptor, matcher
+        return detector, descriptor, matcher
     else:
         raise ValueError("detector は 'lsd' または 'edlines' のみ指定可能です。")
 
@@ -70,7 +81,7 @@ def detect_and_describe(gray: np.ndarray, detector, descriptor, cfg: dict):
         return _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg, cfg)
     elif detector_type == "edlines":
         ed_cfg = cfg["detection"]["edlines"]
-        return _detect_edlines(gray, descriptor, max_lines, ed_cfg["min_length"], cfg)
+        return _detect_edlines(gray, detector, descriptor, max_lines, ed_cfg["min_length"], cfg)
     else:
         raise ValueError("detector は 'lsd' または 'edlines' のみ指定可能です。")
 
@@ -89,6 +100,7 @@ def _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg: dict, cfg: dict)
         if not hasattr(kl, "octave") or kl.octave is None:
             kl.octave = 0
 
+    #  線分の長さに応じて選別する（LSD は response が長さに比例するため、response でソートして上位 max_lines を選ぶのが一般的）
     keylines = sorted(keylines, key=lambda k: k.response, reverse=True)[:max_lines]
     keylines = normalize_line_directions(keylines, cfg)
     keylines, descs = descriptor.compute(gray, keylines)
@@ -98,10 +110,9 @@ def _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg: dict, cfg: dict)
     return keylines, descs
 
 
-def _detect_edlines(gray, descriptor, max_lines, min_length, cfg: dict):
-    ed = cv2.ximgproc.createEdgeDrawing()
-    ed.detectEdges(gray)
-    lines = ed.detectLines()
+def _detect_edlines(gray, detector, descriptor, max_lines, min_length, cfg: dict):
+    detector.detectEdges(gray)
+    lines = detector.detectLines()
 
     if lines is None or len(lines) == 0:
         return [], None
@@ -117,6 +128,7 @@ def _detect_edlines(gray, descriptor, max_lines, min_length, cfg: dict):
             candidates.append((length, (x1, y1, x2, y2)))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
+    # 線分の長さに応じて選別する（EDLines は長さでソートして上位 max_lines を選ぶのが一般的）
     selected_lines = [c[1] for c in candidates[:max_lines]]
 
     keylines = []
