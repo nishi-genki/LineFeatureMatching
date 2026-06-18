@@ -71,22 +71,34 @@ def normalize_line_directions(keylines, cfg: dict):
 # ─────────────────────────────────────────────
 
 
-def detect_and_describe(gray: np.ndarray, detector, descriptor, cfg: dict):
-    """グレースケール画像から KeyLine と LBD 記述子を返す（向き正規化付き）。"""
+def detect_lines(gray: np.ndarray, detector, cfg: dict) -> list:
+    """グレースケール画像から KeyLine のリストを返す（向き正規化付き）。記述子は計算しない。"""
     detector_type = cfg["detection"]["detector"]
     max_lines = cfg["detection"]["max_lines"]
 
     if detector_type == "lsd":
-        lsd_cfg = cfg["detection"]["lsd"]
-        return _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg, cfg)
+        return _detect_lsd(gray, detector, max_lines, cfg["detection"]["lsd"], cfg)
     elif detector_type == "edlines":
-        ed_cfg = cfg["detection"]["edlines"]
-        return _detect_edlines(gray, detector, descriptor, max_lines, ed_cfg["min_length"], cfg)
+        return _detect_edlines(gray, detector, max_lines, cfg["detection"]["edlines"]["min_length"], cfg)
     else:
         raise ValueError("detector は 'lsd' または 'edlines' のみ指定可能です。")
 
 
-def _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg: dict, cfg: dict):
+def describe_lines(gray: np.ndarray, keylines: list, descriptor):
+    """KeyLine リストから LBD 記述子を計算して返す。keylines が空なら ([], None)。"""
+    if not keylines:
+        return [], None
+    try:
+        keylines, descs = descriptor.compute(gray, keylines)
+    except cv2.error as e:
+        print(f"[WARN] descriptor.compute failed: {e}")
+        return [], None
+    if descs is None or len(descs) == 0:
+        return [], None
+    return keylines, descs
+
+
+def _detect_lsd(gray, detector, max_lines, lsd_cfg: dict, cfg: dict) -> list:
     keylines = detector.detect(
         gray,
         scale=lsd_cfg["octave_scale"],
@@ -94,28 +106,22 @@ def _detect_lsd(gray, detector, descriptor, max_lines, lsd_cfg: dict, cfg: dict)
         mask=None,
     )
     if not keylines:
-        return [], None
+        return []
 
     for kl in keylines:
         if not hasattr(kl, "octave") or kl.octave is None:
             kl.octave = 0
 
-    #  線分の長さに応じて選別する（LSD は response が長さに比例するため、response でソートして上位 max_lines を選ぶのが一般的）
     keylines = sorted(keylines, key=lambda k: k.response, reverse=True)[:max_lines]
-    keylines = normalize_line_directions(keylines, cfg)
-    keylines, descs = descriptor.compute(gray, keylines)
-
-    if descs is None or len(descs) == 0:
-        return [], None
-    return keylines, descs
+    return normalize_line_directions(keylines, cfg)
 
 
-def _detect_edlines(gray, detector, descriptor, max_lines, min_length, cfg: dict):
+def _detect_edlines(gray, detector, max_lines, min_length, cfg: dict) -> list:
     detector.detectEdges(gray)
     lines = detector.detectLines()
 
     if lines is None or len(lines) == 0:
-        return [], None
+        return []
 
     candidates = []
     for line in lines:
@@ -128,7 +134,6 @@ def _detect_edlines(gray, detector, descriptor, max_lines, min_length, cfg: dict
             candidates.append((length, (x1, y1, x2, y2)))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
-    # 線分の長さに応じて選別する（EDLines は長さでソートして上位 max_lines を選ぶのが一般的）
     selected_lines = [c[1] for c in candidates[:max_lines]]
 
     keylines = []
@@ -155,16 +160,6 @@ def _detect_edlines(gray, detector, descriptor, max_lines, min_length, cfg: dict
         keylines.append(kl)
 
     if not keylines:
-        return [], None
+        return []
 
-    keylines = normalize_line_directions(keylines, cfg)
-
-    try:
-        keylines, descs = descriptor.compute(gray, keylines)
-    except cv2.error as e:
-        print(f"[WARN] descriptor.compute failed: {e}")
-        return [], None
-
-    if descs is None or len(descs) == 0:
-        return [], None
-    return keylines, descs
+    return normalize_line_directions(keylines, cfg)

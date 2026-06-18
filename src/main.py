@@ -16,7 +16,7 @@ import time
 import cv2
 import numpy as np
 
-from detector import build_detectors, detect_and_describe
+from detector import build_detectors, detect_lines, describe_lines
 from matcher import match_lines
 from writer import MatchCSVWriter, draw_matches_side_by_side
 
@@ -214,7 +214,8 @@ def process_video(cfg: dict):
         prev_frame = cv2.resize(prev_frame, (out_w, out_h))
 
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    prev_kl, prev_desc = detect_and_describe(prev_gray, detector, descriptor, cfg)
+    prev_kl = detect_lines(prev_gray, detector, cfg)
+    prev_kl, prev_desc = describe_lines(prev_gray, prev_kl, descriptor) if stage >= 2 else (prev_kl, None)
 
     # 最初のフレームの姿勢を推定しておく（ループ内でキャッシュして再利用）
     pose_prev = None
@@ -241,7 +242,8 @@ def process_video(cfg: dict):
             curr_frame = cv2.resize(curr_frame, (out_w, out_h))
 
         curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-        curr_kl, curr_desc = detect_and_describe(curr_gray, detector, descriptor, cfg)
+        curr_kl = detect_lines(curr_gray, detector, cfg)
+        curr_kl, curr_desc = describe_lines(curr_gray, curr_kl, descriptor) if stage >= 2 else (curr_kl, None)
 
         # ── Stage 2: LBD フレーム間対応 ──────────────────────────────
         if stage >= 2:
