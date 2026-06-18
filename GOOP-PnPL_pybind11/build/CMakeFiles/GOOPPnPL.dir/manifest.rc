@@ -1,0 +1,2 @@
+#pragma code_page(65001)
+2 /* CREATEPROCESS_MANIFEST_RESOURCE_ID */ 24 /* RT_MANIFEST */ "C:/Users/genki/Desktop/1.lab/GOOP-PnPL_pybind11/build/CMakeFiles/GOOPPnPL.dir/embed.manifest"

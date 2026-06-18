@@ -23,20 +23,14 @@ def _angle_diff(v1: np.ndarray, v2: np.ndarray) -> float:
     return float(np.arccos(min(1.0, cos_a)))
 
 
-def _endpoint_dist(d1: np.ndarray, d2: np.ndarray,
-                   p1: np.ndarray, p2: np.ndarray) -> float:
-    """det線分の両端点から proj 直線への距離の和を返す。"""
-    pv = p2 - p1
-    len_sq = float(np.dot(pv, pv))
-    if len_sq < 1e-9:
-        return float(np.linalg.norm(d1 - p1) + np.linalg.norm(d2 - p1))
-
-    def dist(pt):
-        t = float(np.dot(pt - p1, pv)) / len_sq
-        proj = p1 + np.clip(t, 0.0, 1.0) * pv
-        return float(np.linalg.norm(pt - proj))
-
-    return dist(d1) + dist(d2)
+def _perp_dist(d1: np.ndarray, d2: np.ndarray,
+               p1: np.ndarray, pv_n: np.ndarray) -> float:
+    """det線分の両端点から proj 直線（無限長）への垂線距離の平均。
+    軸方向のずれは overlap_ratio で別途評価するため、ここでは垂直成分のみ測る。"""
+    def perp(pt):
+        v = pt - p1
+        return float(np.linalg.norm(v - np.dot(v, pv_n) * pv_n))
+    return (perp(d1) + perp(d2)) / 2.0
 
 
 def _overlap_ratio(p1: np.ndarray, p2: np.ndarray,
@@ -85,11 +79,13 @@ class LineMatcher2D3D:
             p1 = np.array(proj.pt1_2d, dtype=np.float64)
             p2 = np.array(proj.pt2_2d, dtype=np.float64)
             pv = p2 - p1
-            if np.linalg.norm(pv) < 1e-3:
+            pv_len = float(np.linalg.norm(pv))
+            if pv_len < 1e-3:
                 continue
+            pv_n = pv / pv_len
 
             # ── Pass 1: 緩い条件で候補を収集 ──────────────────────────
-            candidates = []  # (idx, angle_diff, dist, overlap)
+            candidates = []  # (idx, angle_diff, perp, overlap)
             for i, kl in enumerate(keylines):
                 if i in used:
                     continue
@@ -103,12 +99,12 @@ class LineMatcher2D3D:
                 if ang > self._angle_th:
                     continue
 
-                dist = _endpoint_dist(d1, d2, p1, p2)
-                if dist > self._dist_th:
+                perp = _perp_dist(d1, d2, p1, pv_n)
+                if perp > self._dist_th:
                     continue
 
                 overlap = _overlap_ratio(p1, p2, d1, d2)
-                candidates.append((i, ang, dist, overlap))
+                candidates.append((i, ang, perp, overlap))
 
             if not candidates:
                 continue
@@ -125,7 +121,8 @@ class LineMatcher2D3D:
             if best[3] < self._overlap_th:
                 continue
 
-            used.add(best[0])
-            result.append((proj, keylines[best[0]]))
+            kl_idx = best[0]
+            used.add(kl_idx)
+            result.append((proj, keylines[kl_idx], kl_idx))
 
         return result

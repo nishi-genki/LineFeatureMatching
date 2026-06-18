@@ -1,12 +1,12 @@
 {
   "io": {
-    "input": "video/1.mp4",
-    "output": "output/lsd_parameter.mp4",
+    "input": "video/16.mp4",
+    "output": "output/edlines_matching.mp4",
     "csv": "",
     "fallback_fps": 30
   },
   "detection": {
-    "detector": "lsd",
+    "detector": "edlines",
     "max_lines": 200,
     "resize_width": 0,
     "lsd": {
@@ -31,7 +31,8 @@
     "line_thickness": 2,
     "match_thickness": 1,
     "text_font_scale": 0.6,
-    "text_thickness": 1
+    "text_thickness": 1,
+    "show_match_lines": true
   },
   "geometry": {
     "vertical_epsilon": 0.0001
@@ -60,5 +61,7 @@
     "dist_th": 60.0,
     "overlap_th": 0.2,
     "min_lines": 3
-  }
+  },
+  "stage": 2,
+  "_stage_help": "1=線分検出のみ / 2=+LBD対応 / 3=+3D投影 / 4=+2D-3D引継+GOOPPnPL"
 }

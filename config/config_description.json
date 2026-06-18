@@ -1,0 +1,78 @@
+{
+  "io": {
+    "_description": "入出力ファイルの設定",
+    "input": "入力動画ファイルのパス（必須）",
+    "output": "出力動画ファイルのパス。空文字の場合は input のパスに '_out' を付加して自動生成",
+    "csv": "対応線分情報を書き出す CSV ファイルのパス。空文字の場合は出力なし",
+    "fallback_fps": "動画からFPSを取得できない場合に使用するフレームレート"
+  },
+  "detection": {
+    "_description": "線分検出の設定",
+    "detector": "使用する検出器。'lsd' または 'edlines'",
+    "max_lines": "1フレームで保持する線分の最大数",
+    "resize_width": "処理前にリサイズする幅（ピクセル）。0 の場合はリサイズなし",
+    "lsd": {
+      "_description": "LSD (Line Segment Detector) のパラメータ",
+      "octave_scale": "オクターブ間のスケール比",
+      "num_octaves": "ガウシアンピラミッドのオクターブ数",
+      "scale": "入力画像をダウンスケールする係数",
+      "density_th": "線分として受理するための密度閾値"
+    },
+    "edlines": {
+      "_description": "EDLines のパラメータ",
+      "min_length": "検出する線分の最小長さ（ピクセル）",
+      "LineFitErrorThreshold": "直線フィッティングの許容誤差",
+      "MaxDistanceBetweenTwoLines": "2つの線分を統合する最大距離（ピクセル）"
+    }
+  },
+  "descriptor": {
+    "_description": "LBD (Line Band Descriptor) の設定（現在は空でデフォルト使用）"
+  },
+  "matching": {
+    "_description": "LBD 記述子マッチングの設定",
+    "ratio_thresh": "Lowe's ratio test の閾値。小さいほど厳しいマッチング（0〜1）"
+  },
+  "visualization": {
+    "_description": "出力動画の描画設定",
+    "max_draw": "描画するマッチ線分の最大数",
+    "only_matched": "true の場合、マッチした線分のみ描画する",
+    "line_thickness": "検出線分の描画太さ（ピクセル）",
+    "match_thickness": "対応線（フレーム間をつなぐ線）の描画太さ（ピクセル）",
+    "text_font_scale": "画面上のテキストのフォントスケール",
+    "text_thickness": "画面上のテキストの太さ",
+    "show_match_lines": "true の場合、LBD マッチの対応線（オレンジ）を描画する"
+  },
+  "geometry": {
+    "_description": "幾何計算の設定",
+    "vertical_epsilon": "垂直判定の許容誤差（内積がこの値以下なら平行とみなす）"
+  },
+  "camera": {
+    "_description": "カメラ内部パラメータ",
+    "fx": "X 方向の焦点距離（ピクセル）",
+    "fy": "Y 方向の焦点距離（ピクセル）",
+    "cx": "主点の X 座標（ピクセル）",
+    "cy": "主点の Y 座標（ピクセル）",
+    "dist": "歪み係数 [k1, k2, p1, p2, k3]",
+    "width": "画像幅（ピクセル）",
+    "height": "画像高さ（ピクセル）"
+  },
+  "projection": {
+    "_description": "3D 線分の投影設定",
+    "enable": "true の場合、3D 線分をカメラ姿勢に基づいて投影する",
+    "lines3d_csv": "3D 線分の端点座標が記載された CSV ファイルのパス",
+    "marker_jpg": "マーカー画像ファイルのパス（AKAZE 特徴点抽出に使用）",
+    "marker_dat": "マーカーの 3D 座標情報ファイルのパス",
+    "marker_ratio": "マーカーの実寸サイズと dat ファイル座標のスケール比",
+    "marker_min_matches": "マーカー姿勢推定に必要な最小特徴点マッチ数",
+    "color": "投影線分の描画色 [B, G, R]",
+    "thickness": "投影線分の描画太さ（ピクセル）"
+  },
+  "line_matching": {
+    "_description": "幾何学的 2D-3D 線分対応付けの設定",
+    "angle_th_deg": "対応を許可する検出線分と投影線分の最大角度差（度）",
+    "dist_th": "対応を許可する最大垂直距離（ピクセル）",
+    "overlap_th": "対応を許可する最小オーバーラップ率（0〜1）",
+    "min_lines": "姿勢推定に使用する最小対応線分数"
+  },
+  "stage": "実行する処理段階（1〜4）。1=線分検出のみ / 2=+LBD対応 / 3=+3D投影 / 4=+2D-3D引継+GOOPPnPL"
+}

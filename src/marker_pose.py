@@ -6,7 +6,7 @@ C++ DetectMarker + ImageMarker + PoseEstimator::ComputeCameraPose_p の Python�
 
   - 特徴点検出: AKAZE (C++ と同一)
   - マッチング:  BFMatcher(NORM_HAMMING) + Lowe's ratio test (C++ と同一)
-  - 姿勢推定:   cv2.solvePnPRansac (C++ GOPPnPL の代替)
+  - 姿勢推定:   GOOPPnPL (点特徴, use_flag=[1,0,0])
 
 .dat フォーマット:
     4行、各行タブまたはスペース区切りの x y z
@@ -54,17 +54,17 @@ class MarkerPoseEstimator:
             raise FileNotFoundError(f"マーカー画像を開けません: {marker_jpg}")
 
         self._h, self._w = img.shape[:2]
-        self._ratio      = ratio
+        self._ratio = ratio
         self._min_matches = min_matches
 
         coords = _load_dat(marker_dat)
         self._origin = coords[0]
-        self._mX     = coords[1] - coords[0]   # 横方向 (C++ mX)
-        self._mY     = coords[3] - coords[0]   # 縦方向 (C++ mY)
+        self._mX = coords[1] - coords[0]  # 横方向 (C++ mX)
+        self._mY = coords[3] - coords[0]  # 縦方向 (C++ mY)
 
         # C++ cv::AKAZE::create() + cv::BFMatcher(cv::NORM_HAMMING)
         self._detector = cv2.AKAZE_create()
-        self._matcher  = cv2.BFMatcher(cv2.NORM_HAMMING)
+        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self._kps, self._descs = self._detector.detectAndCompute(img, None)
 
     def estimate_pose(
@@ -88,19 +88,19 @@ class MarkerPoseEstimator:
             return None
 
         # マーカー上の画素座標 → 3D 世界座標 (C++ ImageMarker::feature_match と同一)
-        obj_pts: list[np.ndarray] = []
+        Pp: list[np.ndarray] = []
         img_pts: list[tuple[float, float]] = []
         for m in good:
             px, py = self._kps[m.queryIdx].pt
             world = self._origin + self._mX * (px / self._w) + self._mY * (py / self._h)
-            obj_pts.append(world)
+            Pp.append(world.astype(np.float64))
             img_pts.append(kps[m.trainIdx].pt)
-
-        obj_arr = np.array(obj_pts, dtype=np.float32)
-        img_arr = np.array(img_pts, dtype=np.float32)
 
         K64   = K.astype(np.float64)
         dist64 = dist.astype(np.float64)
+
+        obj_arr = np.array(Pp,      dtype=np.float32)
+        img_arr = np.array(img_pts, dtype=np.float32)
 
         ok, rvec, tvec, inliers = cv2.solvePnPRansac(
             obj_arr, img_arr, K64, dist64,
@@ -111,7 +111,6 @@ class MarkerPoseEstimator:
         if not ok or inliers is None or len(inliers) < self._min_matches:
             return None
 
-        # Levenberg-Marquardt による精密化 (GOPPnPL の反復最適化に相当)
         inlier_obj = obj_arr[inliers.flatten()].astype(np.float64)
         inlier_img = img_arr[inliers.flatten()].astype(np.float64)
         rvec, tvec = cv2.solvePnPRefineLM(inlier_obj, inlier_img, K64, dist64, rvec, tvec)

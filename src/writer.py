@@ -15,19 +15,27 @@ import numpy as np
 
 
 def draw_matches_side_by_side(
-    frame1, kl1, frame2, kl2, matches, cfg: dict,
+    frame1,
+    kl1,
+    frame2,
+    kl2,
+    matches,
+    cfg: dict,
     proj_lines1: list | None = None,
     proj_lines2: list | None = None,
+    tracked_kl_indices2: set | None = None,
+    stage: int = 4,
 ) -> np.ndarray:
     """2 フレームを横並びにして線分と対応線を描画する。
-    proj_lines1/2: [(pt1, pt2), ...] 形式の投影3D線分（省略可）。"""
+    tracked_kl_indices2: 記述子トラッキングで引き継がれた右フレームの kl インデックス集合。
+    stage: 実行段階 (1〜4)。キャンバス上部にステージ表示を描く。"""
     vis_cfg = cfg["visualization"]
-    max_draw        = vis_cfg["max_draw"]
-    only_matched    = vis_cfg["only_matched"]
-    line_thickness  = vis_cfg["line_thickness"]
+    max_draw = vis_cfg["max_draw"]
+    only_matched = vis_cfg["only_matched"]
+    line_thickness = vis_cfg["line_thickness"]
     match_thickness = vis_cfg["match_thickness"]
     text_font_scale = vis_cfg["text_font_scale"]
-    text_thickness  = vis_cfg["text_thickness"]
+    text_thickness = vis_cfg["text_thickness"]
 
     h1, w1 = frame1.shape[:2]
     h2, w2 = frame2.shape[:2]
@@ -36,9 +44,12 @@ def draw_matches_side_by_side(
     canvas[:h1, :w1] = frame1
     canvas[:h2, w1:] = frame2
 
-    color_left  = (0, 255, 0)
+    color_left = (0, 255, 0)
     color_right = (255, 0, 0)
+    color_tracked = (0, 0, 255)  # 赤: 記述子トラッキングで引き継がれた線分
     color_match = (0, 165, 255)
+
+    tracked = tracked_kl_indices2 or set()
 
     if only_matched:
         matched_idx1 = {m.queryIdx for m in matches[:max_draw]}
@@ -54,11 +65,12 @@ def draw_matches_side_by_side(
             )
         for i in matched_idx2:
             kl = kl2[i]
+            color = color_tracked if i in tracked else color_right
             cv2.line(
                 canvas,
                 (int(kl.startPointX) + w1, int(kl.startPointY)),
                 (int(kl.endPointX) + w1, int(kl.endPointY)),
-                color_right,
+                color,
                 line_thickness,
             )
     else:
@@ -70,45 +82,45 @@ def draw_matches_side_by_side(
                 color_left,
                 line_thickness,
             )
-        for kl in kl2:
+        for i, kl in enumerate(kl2):
+            color = color_tracked if i in tracked else color_right
             cv2.line(
                 canvas,
                 (int(kl.startPointX) + w1, int(kl.startPointY)),
                 (int(kl.endPointX) + w1, int(kl.endPointY)),
-                color_right,
+                color,
                 line_thickness,
             )
 
-    for m in matches[:max_draw]:
-        kl_a, kl_b = kl1[m.queryIdx], kl2[m.trainIdx]
-        mid_a = (
-            (int(kl_a.startPointX) + int(kl_a.endPointX)) // 2,
-            (int(kl_a.startPointY) + int(kl_a.endPointY)) // 2,
-        )
-        mid_b = (
-            (int(kl_b.startPointX) + int(kl_b.endPointX)) // 2 + w1,
-            (int(kl_b.startPointY) + int(kl_b.endPointY)) // 2,
-        )
-        cv2.line(canvas, mid_a, mid_b, color_match, match_thickness, cv2.LINE_AA)
+    if vis_cfg.get("show_match_lines", True):
+        for m in matches[:max_draw]:
+            kl_a, kl_b = kl1[m.queryIdx], kl2[m.trainIdx]
+            mid_a = (
+                (int(kl_a.startPointX) + int(kl_a.endPointX)) // 2,
+                (int(kl_a.startPointY) + int(kl_a.endPointY)) // 2,
+            )
+            mid_b = (
+                (int(kl_b.startPointX) + int(kl_b.endPointX)) // 2 + w1,
+                (int(kl_b.startPointY) + int(kl_b.endPointY)) // 2,
+            )
+            cv2.line(canvas, mid_a, mid_b, color_match, match_thickness, cv2.LINE_AA)
 
     # 投影3D線分を描画（両フレームそれぞれに）
     proj_cfg = cfg.get("projection", {})
     proj_color = tuple(proj_cfg.get("color", [0, 0, 255]))
     proj_thick = proj_cfg.get("thickness", 2)
 
-    for pl in (proj_lines1 or []):
+    for pl in proj_lines1 or []:
         u1, v1 = pl.pt1_2d
         u2, v2 = pl.pt2_2d
-        cv2.line(canvas, (int(u1), int(v1)), (int(u2), int(v2)),
-                 proj_color, proj_thick, cv2.LINE_AA)
+        cv2.line(canvas, (int(u1), int(v1)), (int(u2), int(v2)), proj_color, proj_thick, cv2.LINE_AA)
 
-    for pl in (proj_lines2 or []):
+    for pl in proj_lines2 or []:
         u1, v1 = pl.pt1_2d
         u2, v2 = pl.pt2_2d
-        cv2.line(canvas, (int(u1) + w1, int(v1)), (int(u2) + w1, int(v2)),
-                 proj_color, proj_thick, cv2.LINE_AA)
+        cv2.line(canvas, (int(u1) + w1, int(v1)), (int(u2) + w1, int(v2)), proj_color, proj_thick, cv2.LINE_AA)
 
-    info = f"Frame pair | Lines: {len(kl1)} / {len(kl2)} | Matches: {len(matches)}"
+    info = f"Frame pair | Lines: {len(kl1)} / {len(kl2)} | " f"Matches: {len(matches)} | Tracked: {len(tracked)}"
     cv2.putText(
         canvas,
         info,
@@ -119,6 +131,28 @@ def draw_matches_side_by_side(
         text_thickness,
         cv2.LINE_AA,
     )
+
+    # ── ステージインジケータ ────────────────────────────────────────
+    stage_labels = [
+        (1, "1.Detect"),
+        (2, "2.LBD"),
+        (3, "3.3DProj"),
+        (4, "4.2D-3DProp"),
+    ]
+    color = (100, 220, 100)  # 緑
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fscale = text_font_scale * 0.85
+    fthick = text_thickness
+    x, y_stage = 10, 50
+    for s_num, s_label in stage_labels:
+        active = s_num <= stage
+        prefix = "[*] " if active else "[ ] "  # アクティブなステージには [*]、非アクティブには [ ] を付ける
+        text = prefix + s_label
+        (tw, _), _ = cv2.getTextSize(text, font, fscale, fthick)
+        cv2.putText(canvas, text, (x, y_stage), font, fscale, color, fthick, cv2.LINE_AA)
+        x += tw + 20
+    # ────────────────────────────────────────────────────────────────
+
     return canvas
 
 

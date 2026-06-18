@@ -1,0 +1,66 @@
+{
+  "io": {
+    "input": "",
+    "output": "",
+    "csv": "",
+    "fallback_fps": 30.0
+  },
+  "detection": {
+    "detector": "lsd",
+    "max_lines": 200,
+    "resize_width": 0,
+    "lsd": {
+      "octave_scale": 2,
+      "num_octaves": 1,
+      "scale": 0.8,
+      "density_th": 0.7
+    },
+    "edlines": {
+      "min_length": 30,
+      "LineFitErrorThreshold": 2.0,
+      "MaxDistanceBetweenTwoLines": 10.0
+    }
+  },
+  "descriptor": {},
+  "matching": {
+    "ratio_thresh": 0.75
+  },
+  "visualization": {
+    "max_draw": 60,
+    "only_matched": false,
+    "line_thickness": 2,
+    "match_thickness": 1,
+    "text_font_scale": 0.6,
+    "text_thickness": 1,
+    "show_match_lines": true
+  },
+  "geometry": {
+    "vertical_epsilon": 0.0001
+  },
+  "camera": {
+    "fx": 0.0,
+    "fy": 0.0,
+    "cx": 0.0,
+    "cy": 0.0,
+    "dist": [],
+    "width": 0,
+    "height": 0
+  },
+  "projection": {
+    "enable": false,
+    "lines3d_csv": "",
+    "marker_jpg": "",
+    "marker_dat": "",
+    "marker_ratio": 0.75,
+    "marker_min_matches": 8,
+    "color": [0, 0, 255],
+    "thickness": 5
+  },
+  "line_matching": {
+    "angle_th_deg": 10.0,
+    "dist_th": 60.0,
+    "overlap_th": 0.2,
+    "min_lines": 3
+  },
+  "stage": 4
+}
