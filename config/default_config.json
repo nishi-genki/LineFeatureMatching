@@ -17,8 +17,8 @@
     },
     "edlines": {
       "min_length": 30,
-      "LineFitErrorThreshold": 2.0,
-      "MaxDistanceBetweenTwoLines": 10.0
+      "LineFitErrorThreshold": 1.0,
+      "MaxDistanceBetweenTwoLines": 6.0
     }
   },
   "descriptor": {},
@@ -54,7 +54,9 @@
     "marker_ratio": 0.75,
     "marker_min_matches": 8,
     "color": [0, 0, 255],
-    "thickness": 5
+    "thickness": 5,
+    "rt_csv": "",
+    "marker_init_frames": -1
   },
   "line_matching": {
     "angle_th_deg": 10.0,

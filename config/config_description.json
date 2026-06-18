@@ -65,7 +65,9 @@
     "marker_ratio": "マーカーの実寸サイズと dat ファイル座標のスケール比",
     "marker_min_matches": "マーカー姿勢推定に必要な最小特徴点マッチ数",
     "color": "投影線分の描画色 [B, G, R]",
-    "thickness": "投影線分の描画太さ（ピクセル）"
+    "thickness": "投影線分の描画太さ（ピクセル）",
+    "rt_csv": "フレームごとの R・t を記録した CSV ファイルのパス（列: frame,R00..R22,t0,t1,t2,success_flag,...）。空文字の場合は無効。success_flag==0 の行はスキップしマーカー推定にフォールバック",
+    "marker_init_frames": "マーカーによる姿勢推定を使用する先頭フレーム数。0=マーカー不使用、-1=制限なし（常にマーカーにフォールバック）"
   },
   "line_matching": {
     "_description": "幾何学的 2D-3D 線分対応付けの設定",

@@ -8,6 +8,7 @@ CLI エントリポイント・設定読み込み・メイン処理パイプラ�
 """
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -66,6 +67,25 @@ def load_config(config_path: str) -> dict:
         cfg["io"]["csv"] = str(output_dir / f"{stem}_matches.csv")
 
     return cfg
+
+
+def load_rt_csv(path: str) -> dict[int, tuple]:
+    """rt_results.csv を読み込み {frame_idx: (R, t)} を返す。success_flag==0 の行はスキップ。"""
+    poses = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if int(row["success_flag"]) == 0:
+                continue
+            frame = int(row["frame"])
+            R = np.array([
+                [float(row["R00"]), float(row["R01"]), float(row["R02"])],
+                [float(row["R10"]), float(row["R11"]), float(row["R12"])],
+                [float(row["R20"]), float(row["R21"]), float(row["R22"])],
+            ], dtype=np.float64)
+            t = np.array([float(row["t0"]), float(row["t1"]), float(row["t2"])], dtype=np.float64)
+            poses[frame] = (R, t)
+    return poses
 
 
 def store_config(cfg: dict, name: str = "config_used.json") -> Path:
@@ -133,6 +153,7 @@ def process_video(cfg: dict):
     K_mat = None
     dist_arr = None
     min_line_corr = int(lm_cfg.get("min_lines", 3))
+    marker_init_frames = int(proj_cfg.get("marker_init_frames", -1))
 
     if proj_cfg.get("enable", False) and stage >= 3:
         from projector import LineProjector, ProjectedLine, load_lines3d_csv
@@ -191,6 +212,26 @@ def process_video(cfg: dict):
                 f"angle={lm_cfg['angle_th_deg']}°, dist={lm_cfg['dist_th']}px, "
                 f"overlap={lm_cfg['overlap_th']}"
             )
+
+        # rt_csv からフレームごとの姿勢を読み込む
+        rt_poses: dict[int, tuple] = {}
+        rt_csv_path = proj_cfg.get("rt_csv", "")
+        if rt_csv_path:
+            try:
+                rt_poses = load_rt_csv(rt_csv_path)
+                print(f"[INFO] rt_csv 読み込み: {rt_csv_path}  ({len(rt_poses)} フレーム)")
+            except Exception as e:
+                print(f"[WARN] rt_csv 読み込み失敗: {e}", file=sys.stderr)
+
+        def get_pose(frame_idx: int):
+            """姿勢取得の優先順位: rt_csv > マーカー推定"""
+            if frame_idx in rt_poses:
+                return rt_poses[frame_idx]
+            return None
+
+    else:
+        def get_pose(frame_idx: int):
+            return None
     # ──────────────────────────────────────────────────────────────────────
 
     # json で指定されたパスの親ディレクトリが存在しない場合も作成
@@ -218,8 +259,8 @@ def process_video(cfg: dict):
     prev_kl, prev_desc = describe_lines(prev_gray, prev_kl, descriptor) if stage >= 2 else (prev_kl, None)
 
     # 最初のフレームの姿勢を推定しておく（ループ内でキャッシュして再利用）
-    pose_prev = None
-    if pose_estimator is not None:
+    pose_prev = get_pose(0)
+    if pose_prev is None and pose_estimator is not None:
         pose_prev = pose_estimator.estimate_pose(prev_gray, K_mat, dist_arr)
 
     # kl_idx → (p1_3d, p2_3d): 記述子マッチングで伝播する 2D-3D 対応テーブル
@@ -269,15 +310,27 @@ def process_video(cfg: dict):
         proj_curr: list = []
 
         if stage >= 3:
-            # Step 1: マーカーから初期姿勢
-            if pose_estimator is not None:
+            # Step 1: 姿勢取得（rt_csv > マーカー推定(初期フレームのみ) > 前フレーム引継ぎ）
+            pose_curr = get_pose(frame_idx)
+            use_marker = marker_init_frames < 0 or frame_idx < marker_init_frames
+            if pose_curr is None and pose_estimator is not None and use_marker:
                 pose_curr = pose_estimator.estimate_pose(curr_gray, K_mat, dist_arr)
 
-            # Step 2: 幾何学的マッチングで curr_2d3d を補完
+            # Step 2: 幾何学的マッチングで curr_2d3d を補完（幾何由来のみ geom_2d3d に記録）
+            geom_2d3d: dict[int, tuple] = {}
             ref_pose = pose_curr if pose_curr is not None else pose_prev
             if projector is not None and line_matcher is not None and ref_pose is not None:
                 proj_init = projector.project_lines(*ref_pose)
-                for proj, _kl, kl_idx in line_matcher.match(proj_init, curr_kl):
+                # LBD 引き継ぎ済みの 3D 線分は幾何マッチング対象から除外
+                already_matched = {
+                    (tuple(p1), tuple(p2)) for p1, p2 in curr_2d3d.values()
+                }
+                proj_init_filtered = [
+                    pl for pl in proj_init
+                    if (tuple(pl.p1_3d), tuple(pl.p2_3d)) not in already_matched
+                ]
+                for proj, _kl, kl_idx in line_matcher.match(proj_init_filtered, curr_kl):
+                    geom_2d3d[kl_idx] = (proj.p1_3d, proj.p2_3d)
                     if kl_idx not in curr_2d3d:
                         curr_2d3d[kl_idx] = (proj.p1_3d, proj.p2_3d)
 
@@ -310,6 +363,7 @@ def process_video(cfg: dict):
                 if pose_curr is not None:
                     proj_curr = projector.project_lines(*pose_curr)
 
+        geom_kl_indices = set(geom_2d3d.keys()) - tracked_kl_indices if stage >= 3 else set()
         canvas = draw_matches_side_by_side(
             prev_frame,
             prev_kl,
@@ -320,6 +374,7 @@ def process_video(cfg: dict):
             proj_lines1=proj_prev,
             proj_lines2=proj_curr,
             tracked_kl_indices2=tracked_kl_indices,
+            geom_kl_indices2=geom_kl_indices,
             stage=stage,
         )
 

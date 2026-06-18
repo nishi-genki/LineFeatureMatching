@@ -24,10 +24,12 @@ def draw_matches_side_by_side(
     proj_lines1: list | None = None,
     proj_lines2: list | None = None,
     tracked_kl_indices2: set | None = None,
+    geom_kl_indices2: set | None = None,
     stage: int = 4,
 ) -> np.ndarray:
     """2 フレームを横並びにして線分と対応線を描画する。
-    tracked_kl_indices2: 記述子トラッキングで引き継がれた右フレームの kl インデックス集合。
+    tracked_kl_indices2: LBD トラッキングで 2D-3D 対応が引き継がれた右フレームの kl インデックス集合。
+    geom_kl_indices2: 幾何学的対応で新たに 2D-3D 対応が得られた右フレームの kl インデックス集合。
     stage: 実行段階 (1〜4)。キャンバス上部にステージ表示を描く。"""
     vis_cfg = cfg["visualization"]
     max_draw = vis_cfg["max_draw"]
@@ -46,10 +48,12 @@ def draw_matches_side_by_side(
 
     color_left = (0, 255, 0)
     color_right = (255, 0, 0)
-    color_tracked = (0, 0, 255)  # 赤: 記述子トラッキングで引き継がれた線分
+    color_tracked = (0, 0, 255)    # 赤: LBD で 2D-3D 対応が引き継がれた線分
+    color_geom    = (0, 255, 255)  # 黄: 幾何学的対応で新たに 2D-3D 対応が得られた線分
     color_match = (0, 165, 255)
 
     tracked = tracked_kl_indices2 or set()
+    geom    = geom_kl_indices2    or set()
 
     if only_matched:
         matched_idx1 = {m.queryIdx for m in matches[:max_draw]}
@@ -65,7 +69,7 @@ def draw_matches_side_by_side(
             )
         for i in matched_idx2:
             kl = kl2[i]
-            color = color_tracked if i in tracked else color_right
+            color = color_tracked if i in tracked else (color_geom if i in geom else color_right)
             cv2.line(
                 canvas,
                 (int(kl.startPointX) + w1, int(kl.startPointY)),
@@ -83,7 +87,7 @@ def draw_matches_side_by_side(
                 line_thickness,
             )
         for i, kl in enumerate(kl2):
-            color = color_tracked if i in tracked else color_right
+            color = color_tracked if i in tracked else (color_geom if i in geom else color_right)
             cv2.line(
                 canvas,
                 (int(kl.startPointX) + w1, int(kl.startPointY)),
