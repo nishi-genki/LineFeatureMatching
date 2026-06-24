@@ -298,11 +298,13 @@ def process_video(cfg: dict):
         # ── Stage 4: LBD による 2D-3D 対応の伝播 ─────────────────────
         curr_2d3d: dict[int, tuple] = {}
         tracked_kl_indices: set[int] = set()
+        tracked_prev_indices: set[int] = set()
         if stage >= 4:
             for m in matches:
                 if m.queryIdx in prev_2d3d:
                     curr_2d3d[m.trainIdx] = prev_2d3d[m.queryIdx]
                     tracked_kl_indices.add(m.trainIdx)
+                    tracked_prev_indices.add(m.queryIdx)
 
         # ── Stage 3/4: 3D投影 + 幾何マッチング + GOOPPnPL ────────────
         pose_curr: tuple | None = None
@@ -347,8 +349,11 @@ def process_video(cfg: dict):
                         for idx, (p1, p2) in curr_2d3d.items()
                     ]
                     try:
+                        use_magsac = lm_cfg.get("use_magsac", True)
                         refined = estimate_from_lines(R_init, corr_for_pose, K_mat,
-                                                      min_lines=min_line_corr)
+                                                      min_lines=min_line_corr,
+                                                      sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
+                                                      magsac_iters=-1 if use_magsac else 0)
                         if refined is not None:
                             pose_curr = refined
                     except Exception:
@@ -373,6 +378,7 @@ def process_video(cfg: dict):
             cfg,
             proj_lines1=proj_prev,
             proj_lines2=proj_curr,
+            tracked_kl_indices1=tracked_prev_indices,
             tracked_kl_indices2=tracked_kl_indices,
             geom_kl_indices2=geom_kl_indices,
             stage=stage,

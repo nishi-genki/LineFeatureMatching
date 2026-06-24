@@ -23,11 +23,13 @@ def draw_matches_side_by_side(
     cfg: dict,
     proj_lines1: list | None = None,
     proj_lines2: list | None = None,
+    tracked_kl_indices1: set | None = None,
     tracked_kl_indices2: set | None = None,
     geom_kl_indices2: set | None = None,
     stage: int = 4,
 ) -> np.ndarray:
     """2 フレームを横並びにして線分と対応線を描画する。
+    tracked_kl_indices1: LBD トラッキングで 2D-3D 対応を持つ左フレームの kl インデックス集合。
     tracked_kl_indices2: LBD トラッキングで 2D-3D 対応が引き継がれた右フレームの kl インデックス集合。
     geom_kl_indices2: 幾何学的対応で新たに 2D-3D 対応が得られた右フレームの kl インデックス集合。
     stage: 実行段階 (1〜4)。キャンバス上部にステージ表示を描く。"""
@@ -52,6 +54,7 @@ def draw_matches_side_by_side(
     color_geom    = (0, 255, 255)  # 黄: 幾何学的対応で新たに 2D-3D 対応が得られた線分
     color_match = (0, 165, 255)
 
+    tracked1 = tracked_kl_indices1 or set()
     tracked = tracked_kl_indices2 or set()
     geom    = geom_kl_indices2    or set()
 
@@ -60,11 +63,12 @@ def draw_matches_side_by_side(
         matched_idx2 = {m.trainIdx for m in matches[:max_draw]}
         for i in matched_idx1:
             kl = kl1[i]
+            color = color_tracked if i in tracked1 else color_left
             cv2.line(
                 canvas,
                 (int(kl.startPointX), int(kl.startPointY)),
                 (int(kl.endPointX), int(kl.endPointY)),
-                color_left,
+                color,
                 line_thickness,
             )
         for i in matched_idx2:
@@ -78,12 +82,13 @@ def draw_matches_side_by_side(
                 line_thickness,
             )
     else:
-        for kl in kl1:
+        for i, kl in enumerate(kl1):
+            color = color_tracked if i in tracked1 else color_left
             cv2.line(
                 canvas,
                 (int(kl.startPointX), int(kl.startPointY)),
                 (int(kl.endPointX), int(kl.endPointY)),
-                color_left,
+                color,
                 line_thickness,
             )
         for i, kl in enumerate(kl2):
@@ -98,6 +103,8 @@ def draw_matches_side_by_side(
 
     if vis_cfg.get("show_match_lines", True):
         for m in matches[:max_draw]:
+            if m.trainIdx not in tracked:
+                continue
             kl_a, kl_b = kl1[m.queryIdx], kl2[m.trainIdx]
             mid_a = (
                 (int(kl_a.startPointX) + int(kl_a.endPointX)) // 2,
