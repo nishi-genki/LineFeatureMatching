@@ -4,7 +4,9 @@
     "input": "入力動画ファイルのパス（必須）",
     "output": "出力動画ファイルのパス。空文字の場合は input のパスに '_out' を付加して自動生成",
     "csv": "対応線分情報を書き出す CSV ファイルのパス。空文字の場合は出力なし",
-    "fallback_fps": "動画からFPSを取得できない場合に使用するフレームレート"
+    "fallback_fps": "動画からFPSを取得できない場合に使用するフレームレート",
+    "use_fixed_seed": "true の場合、random_seed の値を乱数シードとして使用する。false の場合は時刻から自動生成する",
+    "random_seed": "乱数シード値（use_fixed_seed が true のときのみ有効）。実際に使用した値は config_used.json に保存される"
   },
   "detection": {
     "_description": "線分検出の設定",
@@ -74,7 +76,9 @@
     "angle_th_deg": "対応を許可する検出線分と投影線分の最大角度差（度）",
     "dist_th": "対応を許可する最大垂直距離（ピクセル）",
     "overlap_th": "対応を許可する最小オーバーラップ率（0〜1）",
-    "min_lines": "姿勢推定に使用する最小対応線分数"
+    "min_lines": "姿勢推定に使用する最小対応線分数",
+    "sigma_max_px": "MAGSAC++ のノイズスケール上限 [px]。ソフト重み exp(-e²/2σ²) の基準スケール。小さいほど厳しい判定。",
+    "use_magsac": "MAGSAC++ によるロバスト推定の有効/無効 (true=有効, false=無効)"
   },
   "stage": "実行する処理段階（1〜4）。1=線分検出のみ / 2=+LBD対応 / 3=+3D投影 / 4=+2D-3D引継+GOOPPnPL"
 }

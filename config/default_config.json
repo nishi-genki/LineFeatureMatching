@@ -3,7 +3,9 @@
     "input": "",
     "output": "",
     "csv": "",
-    "fallback_fps": 30.0
+    "fallback_fps": 30.0,
+    "use_fixed_seed": false,
+    "random_seed": 0
   },
   "detection": {
     "detector": "lsd",
@@ -62,7 +64,9 @@
     "angle_th_deg": 10.0,
     "dist_th": 60.0,
     "overlap_th": 0.2,
-    "min_lines": 3
+    "min_lines": 3,
+    "sigma_max_px": 20.0,
+    "use_magsac": true
   },
   "stage": 4
 }
