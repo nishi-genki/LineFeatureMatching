@@ -78,7 +78,8 @@
     "overlap_th": "対応を許可する最小オーバーラップ率（0〜1）",
     "min_lines": "姿勢推定に使用する最小対応線分数",
     "sigma_max_px": "MAGSAC++ のノイズスケール上限 [px]。ソフト重み exp(-e²/2σ²) の基準スケール。小さいほど厳しい判定。",
-    "use_magsac": "MAGSAC++ によるロバスト推定の有効/無効 (true=有効, false=無効)"
+    "robust_method": "ロバスト推定手法の選択。\"magsac\"=MAGSAC++, \"ransac\"=RANSAC, \"none\"=ロバスト推定なし",
+    "ransac_thresh_px": "RANSACのインライア判定閾値 [px]。検出線分端点の投影線分への垂線距離がこの値以下をインライアとする（robust_method=\"ransac\" のときのみ有効）"
   },
   "stage": "実行する処理段階（1〜4）。1=線分検出のみ / 2=+LBD対応 / 3=+3D投影 / 4=+2D-3D引継+GOOPPnPL"
 }

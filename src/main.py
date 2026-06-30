@@ -352,11 +352,11 @@ def process_video(cfg: dict):
                         for idx, (p1, p2) in curr_2d3d.items()
                     ]
                     try:
-                        use_magsac = lm_cfg.get("use_magsac", True)
                         refined = estimate_from_lines(R_init, corr_for_pose, K_mat,
                                                       min_lines=min_line_corr,
                                                       sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
-                                                      magsac_iters=-1 if use_magsac else 0)
+                                                      ransac_thresh_px=float(lm_cfg.get("ransac_thresh_px", 10.0)),
+                                                      robust_method=lm_cfg.get("robust_method", "magsac"))
                         if refined is not None:
                             pose_curr = refined
                     except Exception:

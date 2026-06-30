@@ -4,10 +4,10 @@ line_pose.py
 2D-3D 線分対応から姿勢を推定する。
 GOOPPnPL pybind11 モジュールを使用。
 
-ロバスト推定: MAGSAC++ 風のソフト重み付けスコアリング (scipy 不要)。
-  - d=2 の残差分布では重み w_i = exp(-e_i² / 2σ²)
+ロバスト推定: MAGSAC (scipy 不要)。
+  - d=2 の残差分布で σ ∈ [0, σ_max] を積分消去した真の重み w_i = erfc(e_i / (√2·σ_max))
   - モデル選択は Σw_i を最大化
-  - σ は MAD 推定で自動決定 → ハード閾値 inlier_dist_px 不要
+  - σ は重み付き中央値でデータから推定 → ユーザ指定のハード閾値不要
 
 GOOPPnPL_main の入力:
   Pl   : 3D 線分の始点・終点を交互に並べたリスト [p1_start, p1_end, p2_start, p2_end, ...]
@@ -155,9 +155,12 @@ def _line_residual(proj, kl, R: np.ndarray, t: np.ndarray, K: np.ndarray) -> flo
     return (perp(d1) + perp(d2)) / 2.0
 
 
-def _magsac_weight(e: float, sigma: float) -> float:
-    """ソフト重み w = exp(-e²/2σ²)。d=2 の場合のMAGSAC++近似（scipy不要）。"""
-    return math.exp(-e * e / (2.0 * sigma * sigma))
+def _magsac_weight(e: float, sigma_max: float) -> float:
+    """真のMAGSACソフト重み (d=2)。
+    σ ∈ [0, sigma_max] を積分消去した解析解: w = erfc(e / (√2 · sigma_max))。
+    e=0 で w=1、e→∞ で w→0。ハード閾値不要。
+    """
+    return math.erfc(e / (math.sqrt(2.0) * sigma_max))
 
 
 def _compute_magsac_iters(n: int, sample_size: int = 3, confidence: float = 0.99) -> int:
@@ -165,6 +168,18 @@ def _compute_magsac_iters(n: int, sample_size: int = 3, confidence: float = 0.99
     p_sample = 0.5 ** sample_size
     k = math.log(1.0 - confidence) / math.log(max(1e-10, 1.0 - p_sample))
     return max(1, min(int(math.ceil(k)), 200))
+
+
+def _weighted_median(values: list[float], weights: list[float]) -> float:
+    """重み付き中央値を返す。"""
+    paired = sorted(zip(values, weights), key=lambda x: x[0])
+    total = sum(weights)
+    cumulative = 0.0
+    for v, w in paired:
+        cumulative += w
+        if cumulative >= total / 2.0:
+            return v
+    return paired[-1][0]
 
 
 def _magsac_inliers(
@@ -176,11 +191,11 @@ def _magsac_inliers(
     use_direction: bool = True,
 ) -> list[int]:
     """
-    MAGSAC++ 風のソフトスコアリングでインライアインデックスを返す。
+    MAGSAC (d=2) でインライアインデックスを返す。
 
-    モデル選択: Σ exp(-e²/2σ_max²) を最大化（ハード閾値なし）。
-    σ 推定: 最良モデルの残差から MAD 推定。
-    インライア: 3σ 以内。
+    モデル選択: Σ erfc(e/√2/σ_max) を最大化（σを積分消去した真のMAGSAC重み）。
+    σ 推定: 最良モデルの残差を重み付き中央値で推定（データ由来、ユーザ指定不要）。
+    インライア: 3σ_est 以内（σ_est はデータから決定）。
     """
     n = len(correspondences)
     if n < min_lines:
@@ -215,18 +230,60 @@ def _magsac_inliers(
     if not best_residuals:
         return []
 
-    # MAD によるσ推定
-    finite_r = sorted(r for r in best_residuals if r < float('inf'))
-    if finite_r:
-        mad_median = finite_r[len(finite_r) // 2]
-        sigma_est  = max(mad_median / 0.6745, 1.0)
-        sigma_est  = min(sigma_est, sigma_max_px)
-    else:
-        sigma_est = sigma_max_px
+    # 重み付き中央値によるσ推定（データ由来、σ_maxに依存しない）
+    finite_pairs = [
+        (r, _magsac_weight(r, sigma_max_px))
+        for r in best_residuals if r < float('inf')
+    ]
+    if not finite_pairs:
+        return []
+
+    finite_r, finite_w = zip(*finite_pairs)
+    wmed = _weighted_median(list(finite_r), list(finite_w))
+    sigma_est = max(wmed / 0.6745, 1.0)
 
     threshold = 3.0 * sigma_est
     inliers = [i for i, r in enumerate(best_residuals) if r <= threshold]
     return inliers if len(inliers) >= min_lines else []
+
+
+def _ransac_inliers(
+    correspondences: list,
+    K: np.ndarray,
+    min_lines: int,
+    n_iter: int,
+    inlier_thresh_px: float,
+    use_direction: bool = True,
+) -> list[int]:
+    """
+    RANSACでインライアインデックスを返す。
+
+    モデル選択: inlier_thresh_px 以内のインライア数を最大化（ハード閾値）。
+    """
+    n = len(correspondences)
+    if n < min_lines:
+        return list(range(n))
+
+    best_inliers: list[int] = []
+
+    for _ in range(n_iter):
+        sample_idx = random.sample(range(n), min_lines)
+        sample = [correspondences[i] for i in sample_idx]
+
+        pose = _estimate_pose_core(sample, K, min_lines, use_direction)
+        if pose is None:
+            continue
+        R_s, t_s = pose
+
+        inliers = [
+            i for i, item in enumerate(correspondences)
+            if _line_residual(item[0], item[1], R_s, t_s, K) <= inlier_thresh_px
+        ]
+
+        if len(inliers) > len(best_inliers):
+            best_inliers = inliers
+
+    return best_inliers if len(best_inliers) >= min_lines else []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,16 +325,18 @@ def _estimate_pose_core(
     except Exception:
         return None
 
-    def _avg_z(R, t):
-        R_ = np.asarray(R, dtype=np.float64)
-        t_ = np.asarray(t, dtype=np.float64).flatten()
-        zs = [float((R_ @ ((np.asarray(item[0].p1_3d) + np.asarray(item[0].p2_3d)) / 2.0) + t_)[2])
-              for item in correspondences]
-        return sum(zs) / max(len(zs), 1)
+    R1 = np.asarray(R1, dtype=np.float64)
+    t1 = np.asarray(t1, dtype=np.float64).flatten()
+    R2 = np.asarray(R2, dtype=np.float64)
+    t2 = np.asarray(t2, dtype=np.float64).flatten()
 
-    if _avg_z(R2, t2) > _avg_z(R1, t1):
-        return np.asarray(R2, dtype=np.float64), np.asarray(t2, dtype=np.float64).flatten()
-    return np.asarray(R1, dtype=np.float64), np.asarray(t1, dtype=np.float64).flatten()
+    def _total_residual(R, t):
+        return sum(
+            _line_residual(item[0], item[1], R, t, K)
+            for item in correspondences
+        )
+
+    return (R2, t2) if _total_residual(R2, t2) < _total_residual(R1, t1) else (R1, t1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,36 +344,39 @@ def _estimate_pose_core(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def estimate_from_lines(
-    R_init:          np.ndarray,   # 不使用（後方互換のため残す）
-    correspondences: list,
-    K:               np.ndarray,
-    min_lines:       int   = 3,
-    use_direction:   bool  = True,
-    magsac_iters:    int   = -1,   # -1: 自動計算, 0: ロバスト推定なし
-    sigma_max_px:    float = 20.0,
+    R_init:           np.ndarray,   # 不使用（後方互換のため残す）
+    correspondences:  list,
+    K:                np.ndarray,
+    min_lines:        int   = 3,
+    use_direction:    bool  = True,
+    robust_method:    str   = "magsac",  # "magsac" / "ransac" / "none"
+    sigma_max_px:     float = 20.0,
+    ransac_thresh_px: float = 10.0,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """
     2D-3D 線分対応から姿勢 (R, t) を推定する。
 
-    correspondences : [(ProjectedLine, KeyLine, kl_idx), ...] の対応リスト
-    K               : 3×3 カメラ内部行列
-    magsac_iters    : MAGSAC++ 反復回数 (-1=自動計算, 0=ロバスト推定なし)
-    sigma_max_px    : ノイズスケール上限 [px]。インライア重みのスケール基準。
+    correspondences  : [(ProjectedLine, KeyLine, kl_idx), ...] の対応リスト
+    K                : 3×3 カメラ内部行列
+    robust_method    : ロバスト推定手法 ("magsac" / "ransac" / "none")
+    sigma_max_px     : MAGSACのノイズスケール上限 [px]
+    ransac_thresh_px : RANSACのインライア判定閾値 [px]
     """
     if not _GOPPNPL_AVAILABLE:
         return None
     if len(correspondences) < min_lines:
         return None
 
-    if magsac_iters != 0 and len(correspondences) > min_lines:
-        n_iter = (
-            _compute_magsac_iters(len(correspondences))
-            if magsac_iters < 0
-            else magsac_iters
-        )
-        inlier_idx = _magsac_inliers(
-            correspondences, K, min_lines, n_iter, sigma_max_px, use_direction,
-        )
+    if robust_method != "none" and len(correspondences) > min_lines:
+        n_iter = _compute_magsac_iters(len(correspondences))
+        if robust_method == "magsac":
+            inlier_idx = _magsac_inliers(
+                correspondences, K, min_lines, n_iter, sigma_max_px, use_direction,
+            )
+        else:  # ransac
+            inlier_idx = _ransac_inliers(
+                correspondences, K, min_lines, n_iter, ransac_thresh_px, use_direction,
+            )
         if inlier_idx:
             correspondences = [correspondences[i] for i in inlier_idx]
 
