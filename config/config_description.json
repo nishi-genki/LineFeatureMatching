@@ -32,7 +32,14 @@
   },
   "matching": {
     "_description": "LBD 記述子マッチングの設定",
-    "ratio_thresh": "Lowe's ratio test の閾値。小さいほど厳しいマッチング（0〜1）"
+    "ratio_thresh": "Lowe's ratio test の閾値。小さいほど厳しいマッチング（0〜1）",
+    "propagation_filter": {
+      "_description": "2D-3D 対応伝播時の 2D-2D 幾何整合フィルタ。前後フレームの検出線分同士を直接比較する（姿勢に依存しない）",
+      "enable": "true の場合、幾何整合を満たさない LBD マッチは 2D-3D 対応を伝播しない",
+      "angle_th_deg": "伝播を許可する検出線分同士の最大角度差（度）",
+      "dist_th_px": "伝播を許可する線分中点間の最大距離（ピクセル）",
+      "length_ratio_th": "伝播を許可する最大長さ比（長い方÷短い方）"
+    }
   },
   "visualization": {
     "_description": "出力動画の描画設定",
@@ -79,7 +86,10 @@
     "min_lines": "姿勢推定に使用する最小対応線分数",
     "sigma_max_px": "MAGSAC++ のノイズスケール上限 [px]。ソフト重み exp(-e²/2σ²) の基準スケール。小さいほど厳しい判定。",
     "robust_method": "ロバスト推定手法の選択。\"magsac\"=MAGSAC++, \"ransac\"=RANSAC, \"none\"=ロバスト推定なし",
-    "ransac_thresh_px": "RANSACのインライア判定閾値 [px]。検出線分端点の投影線分への垂線距離がこの値以下をインライアとする（robust_method=\"ransac\" のときのみ有効）"
+    "ransac_thresh_px": "RANSACのインライア判定閾値 [px]。検出線分端点の投影線分への垂線距離がこの値以下をインライアとする（robust_method=\"ransac\" のときのみ有効）",
+    "ambiguity_ratio": "GOOPPnPL の2候補解の残差比がこの値以内なら「拮抗」とみなし、前フレーム姿勢に回転が近い方を選ぶ（平面的シーンでの鏡映反転解対策）。大きいほど時間的整合性を優先する",
+    "max_rot_jump_deg": "姿勢ジャンプゲート: 前フレーム姿勢からの回転差がこの値（度）を超える推定結果を棄却し前フレーム姿勢を維持する。反転解・破綻解の混入防止。0以下で無効",
+    "max_trans_jump": "姿勢ジャンプゲート: 前フレームからのカメラ中心の移動量がこの値（3Dモデルの単位系）を超える推定結果を棄却する。0以下で無効"
   },
   "stage": "実行する処理段階（1〜4）。1=線分検出のみ / 2=+LBD対応 / 3=+3D投影 / 4=+2D-3D引継+GOOPPnPL"
 }

@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 from detector import build_detectors, detect_lines, describe_lines
-from matcher import match_lines
+from matcher import match_lines, is_match_consistent
 from writer import MatchCSVWriter, draw_matches_side_by_side
 
 # ─────────────────────────────────────────────
@@ -56,13 +56,14 @@ def load_config(config_path: str) -> dict:
         print("[ERROR] config.json の io.input を指定してください。", file=sys.stderr)
         sys.exit(1)
 
-    # 出力パスの自動生成
+    # 出力パスの自動生成（動画は output/video/ にまとめる）
     output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
+    video_dir = output_dir / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
 
     stem = Path(cfg["io"]["input"]).stem
     if not cfg["io"].get("output"):
-        cfg["io"]["output"] = str(output_dir / f"{stem}_line_match.mp4")
+        cfg["io"]["output"] = str(video_dir / f"{stem}_line_match.mp4")
     if not cfg["io"].get("csv"):
         cfg["io"]["csv"] = str(output_dir / f"{stem}_matches.csv")
 
@@ -90,11 +91,11 @@ def load_rt_csv(path: str) -> dict[int, tuple]:
 
 def store_config(cfg: dict, name: str = "config_used.json") -> Path:
     """
-    読み込んだ cfg を出力先のファイル名（拡張子を除いたパス）下に保存して Path を返す。
-    例: "output/edlines_parameter.mp4" -> "output/edlines_parameter/config_used.json"
+    読み込んだ cfg をフレーム画像と同じフォルダに保存して Path を返す。
+    例: "output/edlines_parameter.mp4" -> "output/edlines_parameter_frames/config_used.json"
     """
     out_file = Path(cfg["io"]["output"])
-    out_dir = out_file.with_suffix("")  # 拡張子を除いたパスをディレクトリとして使う
+    out_dir = Path("output") / (out_file.stem + "_frames")  # フレーム保存先と同じフォルダ
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / name
     try:
@@ -128,6 +129,13 @@ def process_video(cfg: dict):
     resize_width = det_cfg["resize_width"]
     ratio_thresh = mat_cfg["ratio_thresh"]
 
+    # 2D-3D 伝播時の 2D-2D 幾何整合フィルタ
+    prop_cfg    = mat_cfg.get("propagation_filter", {})
+    prop_enable = bool(prop_cfg.get("enable", False))
+    prop_angle  = float(prop_cfg.get("angle_th_deg", 10.0))
+    prop_dist   = float(prop_cfg.get("dist_th_px", 100.0))
+    prop_ratio  = float(prop_cfg.get("length_ratio_th", 2.0))
+
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         print(f"[ERROR] 映像を開けません: {input_path}", file=sys.stderr)
@@ -158,11 +166,15 @@ def process_video(cfg: dict):
     min_line_corr = int(lm_cfg.get("min_lines", 3))
     marker_init_frames = int(proj_cfg.get("marker_init_frames", -1))
 
+    # 姿勢ジャンプゲート（0以下で無効）
+    max_rot_jump_deg = float(lm_cfg.get("max_rot_jump_deg", -1.0))
+    max_trans_jump   = float(lm_cfg.get("max_trans_jump", -1.0))
+
     if proj_cfg.get("enable", False) and stage >= 3:
         from projector import LineProjector, ProjectedLine, load_lines3d_csv
         from marker_pose import MarkerPoseEstimator
         from line_matcher import LineMatcher2D3D
-        from line_pose import estimate_from_lines
+        from line_pose import estimate_from_lines, _rotation_angle_deg
 
         cam_cfg = cfg["camera"]
         fx, fy = cam_cfg["fx"], cam_cfg["fy"]
@@ -299,15 +311,22 @@ def process_video(cfg: dict):
         csv_writer.write(frame_idx, prev_kl, curr_kl, matches)
 
         # ── Stage 4: LBD による 2D-3D 対応の伝播 ─────────────────────
+        # 伝播条件: (1) LBD 対応あり (2) 検出線分同士の 2D-2D 幾何整合
+        #           （角度差・中点距離・長さ比。姿勢に依存しない）
         curr_2d3d: dict[int, tuple] = {}
         tracked_kl_indices: set[int] = set()
         tracked_prev_indices: set[int] = set()
         if stage >= 4:
             for m in matches:
-                if m.queryIdx in prev_2d3d:
-                    curr_2d3d[m.trainIdx] = prev_2d3d[m.queryIdx]
-                    tracked_kl_indices.add(m.trainIdx)
-                    tracked_prev_indices.add(m.queryIdx)
+                if m.queryIdx not in prev_2d3d:
+                    continue
+                if prop_enable and not is_match_consistent(
+                        prev_kl[m.queryIdx], curr_kl[m.trainIdx],
+                        prop_angle, prop_dist, prop_ratio):
+                    continue
+                curr_2d3d[m.trainIdx] = prev_2d3d[m.queryIdx]
+                tracked_kl_indices.add(m.trainIdx)
+                tracked_prev_indices.add(m.queryIdx)
 
         # ── Stage 3/4: 3D投影 + 幾何マッチング + GOOPPnPL ────────────
         pose_curr: tuple | None = None
@@ -356,7 +375,21 @@ def process_video(cfg: dict):
                                                       min_lines=min_line_corr,
                                                       sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
                                                       ransac_thresh_px=float(lm_cfg.get("ransac_thresh_px", 10.0)),
-                                                      robust_method=lm_cfg.get("robust_method", "magsac"))
+                                                      robust_method=lm_cfg.get("robust_method", "magsac"),
+                                                      ambiguity_ratio=float(lm_cfg.get("ambiguity_ratio", 1.5)))
+                        # ── 姿勢ジャンプゲート ──────────────────────
+                        # 前フレーム姿勢からの回転・カメラ位置の跳びが物理的に
+                        # あり得ない大きさなら棄却する（反転解・破綻解の入口対策）。
+                        if refined is not None and max_rot_jump_deg > 0:
+                            R_new, t_new = refined
+                            R_old, t_old = R_init_pose
+                            if _rotation_angle_deg(R_new, R_old) > max_rot_jump_deg:
+                                refined = None
+                            elif max_trans_jump > 0:
+                                c_new = -R_new.T @ np.asarray(t_new)
+                                c_old = -R_old.T @ np.asarray(t_old)
+                                if float(np.linalg.norm(c_new - c_old)) > max_trans_jump:
+                                    refined = None
                         if refined is not None:
                             pose_curr = refined
                     except Exception:
@@ -411,6 +444,19 @@ def process_video(cfg: dict):
     cap.release()
     writer.release()
     csv_writer.close()
+
+    # ── MAGSAC 診断ログの書き出し ─────────────────────────────────
+    try:
+        from line_pose import MAGSAC_DIAG
+        if MAGSAC_DIAG:
+            diag_path = frames_dir / "magsac_diag.csv"
+            with open(diag_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(MAGSAC_DIAG[0].keys()))
+                w.writeheader()
+                w.writerows(MAGSAC_DIAG)
+            print(f"[INFO] MAGSAC 診断ログ → {diag_path}  ({len(MAGSAC_DIAG)} 呼び出し)")
+    except Exception as e:
+        print(f"[WARN] MAGSAC 診断ログ出力失敗: {e}", file=sys.stderr)
 
     avg = total_matches / max(frame_idx - 1, 1)
     print(f"\n[DONE] 処理フレーム数: {frame_idx - 1}")

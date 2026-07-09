@@ -117,6 +117,9 @@ def _project_line_2d(
 # 角度事前フィルタ: これより大きい角度差の対応は残差 inf 扱い
 _ANGLE_PREFILTER_DEG = 45.0
 
+# MAGSAC 診断ログ（呼び出しごとに σ 推定の内訳を蓄積。main.py が CSV に出力する）
+MAGSAC_DIAG: list[dict] = []
+
 
 def _line_residual(proj, kl, R: np.ndarray, t: np.ndarray, K: np.ndarray) -> float:
     """
@@ -189,12 +192,16 @@ def _magsac_inliers(
     n_iter: int,
     sigma_max_px: float,
     use_direction: bool = True,
+    R_ref: "Optional[np.ndarray]" = None,
+    ambiguity_ratio: float = 1.5,
 ) -> list[int]:
     """
     MAGSAC (d=2) でインライアインデックスを返す。
 
     モデル選択: Σ erfc(e/√2/σ_max) を最大化（σを積分消去した真のMAGSAC重み）。
-    σ 推定: 最良モデルの残差を重み付き中央値で推定（データ由来、ユーザ指定不要）。
+    LO ステップ: 最良モデルの緩いインライア集合で再フィットし残差を再計算
+                 （最小サンプルの過学習残差によるσの過小推定を防ぐ）。
+    σ 推定: 再フィット後の残差を重み付き中央値で推定（データ由来、ユーザ指定不要）。
     インライア: 3σ_est 以内（σ_est はデータから決定）。
     """
     n = len(correspondences)
@@ -208,7 +215,7 @@ def _magsac_inliers(
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
 
-        pose = _estimate_pose_core(sample, K, min_lines, use_direction)
+        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref, ambiguity_ratio)
         if pose is None:
             continue
         R_s, t_s = pose
@@ -230,7 +237,37 @@ def _magsac_inliers(
     if not best_residuals:
         return []
 
-    # 重み付き中央値によるσ推定（データ由来、σ_maxに依存しない）
+    # ── LO (σ-consensus) ステップ ────────────────────────────────
+    # 最小サンプルフィットの残差はサンプル自身に過学習して ≈0 となり、
+    # σを過小推定する。緩いインライア集合（residual ≤ σ_max）で再フィットし、
+    # 非最小フィットの正直な残差に置き換える。スコアが改善する間繰り返す。
+    lo_applied = 0
+    for _ in range(3):
+        lo_idx = [i for i, r in enumerate(best_residuals) if r <= sigma_max_px]
+        if len(lo_idx) < min_lines:
+            break
+        lo_pose = _estimate_pose_core(
+            [correspondences[i] for i in lo_idx], K, min_lines, use_direction,
+            R_ref, ambiguity_ratio,
+        )
+        if lo_pose is None:
+            break
+        R_lo, t_lo = lo_pose
+        lo_residuals = [
+            _line_residual(item[0], item[1], R_lo, t_lo, K)
+            for item in correspondences
+        ]
+        lo_score = sum(
+            _magsac_weight(r, sigma_max_px)
+            for r in lo_residuals if r < float('inf')
+        )
+        if lo_score <= best_score:
+            break
+        best_score     = lo_score
+        best_residuals = lo_residuals
+        lo_applied += 1
+
+    # 重み付き中央値によるσ推定
     finite_pairs = [
         (r, _magsac_weight(r, sigma_max_px))
         for r in best_residuals if r < float('inf')
@@ -244,6 +281,22 @@ def _magsac_inliers(
 
     threshold = 3.0 * sigma_est
     inliers = [i for i, r in enumerate(best_residuals) if r <= threshold]
+
+    sorted_r = sorted(finite_r)
+    MAGSAC_DIAG.append({
+        "n_corr":         n,
+        "n_finite":       len(sorted_r),
+        "res_median":     sorted_r[len(sorted_r) // 2],
+        "res_p90":        sorted_r[int(len(sorted_r) * 0.9)] if len(sorted_r) > 1 else sorted_r[-1],
+        "res_max":        sorted_r[-1],
+        "wmed":           wmed,
+        "sigma_est":      sigma_est,
+        "threshold":      threshold,
+        "n_inliers":      len(inliers),
+        "n_inliers_gt15": sum(1 for i in inliers if best_residuals[i] > 15.0),
+        "lo_applied":     lo_applied,
+    })
+
     return inliers if len(inliers) >= min_lines else []
 
 
@@ -254,6 +307,8 @@ def _ransac_inliers(
     n_iter: int,
     inlier_thresh_px: float,
     use_direction: bool = True,
+    R_ref: "Optional[np.ndarray]" = None,
+    ambiguity_ratio: float = 1.5,
 ) -> list[int]:
     """
     RANSACでインライアインデックスを返す。
@@ -270,7 +325,7 @@ def _ransac_inliers(
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
 
-        pose = _estimate_pose_core(sample, K, min_lines, use_direction)
+        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref, ambiguity_ratio)
         if pose is None:
             continue
         R_s, t_s = pose
@@ -290,13 +345,24 @@ def _ransac_inliers(
 # 内部: 姿勢推定コア（ロバスト推定なし）
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _rotation_angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
+    """2つの回転行列の相対回転角 [deg] を返す。"""
+    cos_a = (float(np.trace(Ra.T @ Rb)) - 1.0) / 2.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_a))))
+
+
 def _estimate_pose_core(
     correspondences: list,
     K: np.ndarray,
     min_lines: int = 3,
     use_direction: bool = True,
+    R_ref: Optional[np.ndarray] = None,
+    ambiguity_ratio: float = 1.5,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """GOOPPnPLで姿勢推定する（ロバスト推定なし）。"""
+    """GOOPPnPLで姿勢推定する（ロバスト推定なし）。
+    R_ref: 参照回転行列（前フレーム姿勢など）。2候補解の残差が拮抗している
+    場合に、回転が近い方を選ぶために使う（鏡映姿勢の曖昧性解消）。
+    ambiguity_ratio: 残差比がこの値以内なら「拮抗」とみなす。"""
     if not _GOPPNPL_AVAILABLE:
         return None
 
@@ -330,13 +396,29 @@ def _estimate_pose_core(
     R2 = np.asarray(R2, dtype=np.float64)
     t2 = np.asarray(t2, dtype=np.float64).flatten()
 
+    # 再投影残差の小さい方を採用する。
+    # 非物理解（カメラ後方投影）は残差が inf になるため自動的に排除される。
+    # ソルバーのコスト J はキラリティを区別できないので判定には使わない。
     def _total_residual(R, t):
         return sum(
             _line_residual(item[0], item[1], R, t, K)
             for item in correspondences
         )
 
-    return (R2, t2) if _total_residual(R2, t2) < _total_residual(R1, t1) else (R1, t1)
+    res1 = _total_residual(R1, t1)
+    res2 = _total_residual(R2, t2)
+
+    # 平面的な線分配置では鏡映姿勢の残差がほぼ同じになり、残差比較だけでは
+    # 反転解を選んでしまうことがある。残差が拮抗している場合は参照姿勢
+    # （前フレーム姿勢）に回転が近い方を選ぶ。
+    if (R_ref is not None
+            and res1 < float('inf') and res2 < float('inf')
+            and max(res1, res2) <= ambiguity_ratio * min(res1, res2)):
+        a1 = _rotation_angle_deg(R1, R_ref)
+        a2 = _rotation_angle_deg(R2, R_ref)
+        return (R1, t1) if a1 <= a2 else (R2, t2)
+
+    return (R2, t2) if res2 < res1 else (R1, t1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -344,7 +426,7 @@ def _estimate_pose_core(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def estimate_from_lines(
-    R_init:           np.ndarray,   # 不使用（後方互換のため残す）
+    R_init:           np.ndarray,   # 参照回転行列（前フレーム姿勢）。鏡映曖昧性の解消に使用
     correspondences:  list,
     K:                np.ndarray,
     min_lines:        int   = 3,
@@ -352,32 +434,44 @@ def estimate_from_lines(
     robust_method:    str   = "magsac",  # "magsac" / "ransac" / "none"
     sigma_max_px:     float = 20.0,
     ransac_thresh_px: float = 10.0,
+    ambiguity_ratio:  float = 1.5,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """
     2D-3D 線分対応から姿勢 (R, t) を推定する。
 
+    R_init           : 参照回転行列。GOOPPnPL の2候補解の残差が拮抗している場合、
+                       回転が近い方を選ぶ（平面的シーンでの反転解対策）。None 可
     correspondences  : [(ProjectedLine, KeyLine, kl_idx), ...] の対応リスト
     K                : 3×3 カメラ内部行列
     robust_method    : ロバスト推定手法 ("magsac" / "ransac" / "none")
     sigma_max_px     : MAGSACのノイズスケール上限 [px]
     ransac_thresh_px : RANSACのインライア判定閾値 [px]
+    ambiguity_ratio  : 2候補の残差比がこの値以内なら拮抗とみなし R_init との回転差で選ぶ
     """
     if not _GOPPNPL_AVAILABLE:
         return None
     if len(correspondences) < min_lines:
         return None
 
+    R_ref = None
+    if R_init is not None:
+        R_arr = np.asarray(R_init, dtype=np.float64)
+        if R_arr.shape == (3, 3):
+            R_ref = R_arr
+
     if robust_method != "none" and len(correspondences) > min_lines:
         n_iter = _compute_magsac_iters(len(correspondences))
         if robust_method == "magsac":
             inlier_idx = _magsac_inliers(
                 correspondences, K, min_lines, n_iter, sigma_max_px, use_direction,
+                R_ref, ambiguity_ratio,
             )
         else:  # ransac
             inlier_idx = _ransac_inliers(
                 correspondences, K, min_lines, n_iter, ransac_thresh_px, use_direction,
+                R_ref, ambiguity_ratio,
             )
         if inlier_idx:
             correspondences = [correspondences[i] for i in inlier_idx]
 
-    return _estimate_pose_core(correspondences, K, min_lines, use_direction)
+    return _estimate_pose_core(correspondences, K, min_lines, use_direction, R_ref, ambiguity_ratio)
