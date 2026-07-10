@@ -6,17 +6,33 @@ C++ DetectMarker + ImageMarker + PoseEstimator::ComputeCameraPose_p の Python�
 
   - 特徴点検出: AKAZE (C++ と同一)
   - マッチング:  BFMatcher(NORM_HAMMING) + Lowe's ratio test (C++ と同一)
-  - 姿勢推定:   GOOPPnPL (点特徴, use_flag=[1,0,0])
+  - インライア選別: solvePnPRansac
+  - 姿勢推定:   GOOPPnPL (点特徴, use_flag=[1,0,0])。
+                コスト最小解 R1, t1 を採用（初期位置推定のため参照姿勢は
+                使わない）。GOOPPnPL が使えない場合は solvePnPRefineLM に
+                フォールバック。
 
 .dat フォーマット:
     4行、各行タブまたはスペース区切りの x y z
     順序: [左上, 右上, 右下, 左下]  (C++ coords[0..3])
 """
 
+import os
+import sys
 from typing import Optional
 
 import cv2
 import numpy as np
+
+# GOOPPnPL pybind11 モジュールのインポート（line_pose.py と同一手順）
+_BIND_DIR = os.path.join(os.path.dirname(__file__),
+                         "../GOOP-PnPL_pybind11/build")
+sys.path.insert(0, os.path.abspath(_BIND_DIR))
+try:
+    import GOOPPnPL as _goppnpl
+    _GOPPNPL_AVAILABLE = True
+except ImportError:
+    _GOPPNPL_AVAILABLE = False
 
 
 def _load_dat(dat_path: str) -> list[np.ndarray]:
@@ -113,7 +129,42 @@ class MarkerPoseEstimator:
 
         inlier_obj = obj_arr[inliers.flatten()].astype(np.float64)
         inlier_img = img_arr[inliers.flatten()].astype(np.float64)
-        rvec, tvec = cv2.solvePnPRefineLM(inlier_obj, inlier_img, K64, dist64, rvec, tvec)
 
+        pose = self._goppnpl_pose(inlier_obj, inlier_img, K64, dist64)
+        if pose is not None:
+            return pose
+
+        # フォールバック: GOOPPnPL が使えない/失敗した場合は LM 反復
+        rvec, tvec = cv2.solvePnPRefineLM(inlier_obj, inlier_img, K64, dist64, rvec, tvec)
         R, _ = cv2.Rodrigues(rvec)
         return R, tvec.flatten()
+
+    @staticmethod
+    def _goppnpl_pose(
+        obj_pts: np.ndarray,      # (N,3) インライア3D点
+        img_pts: np.ndarray,      # (N,2) インライア画像点（歪みあり）
+        K: np.ndarray,
+        dist: np.ndarray,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """GOOPPnPL（点特徴）で姿勢を推定する。失敗時は None。
+
+        コスト最小解 R1, t1 を常に採用する。R1 は C++ 側で点群がカメラ前方に
+        来ることを確認済みの大域最適解を OIPnPL で改良したもの。
+        """
+        if not _GOPPNPL_AVAILABLE:
+            return None
+
+        # 歪み補正して正規化座標へ。i_Pp は C++ 側で正規化され視線方向として
+        # のみ使われるため、(x_n, y_n, 1) を渡せば fx≠fy でも厳密。
+        und = cv2.undistortPoints(img_pts.reshape(-1, 1, 2), K, dist).reshape(-1, 2)
+
+        Pp   = [obj_pts[i].copy() for i in range(len(obj_pts))]
+        i_Pp = [np.array([und[i, 0], und[i, 1], 1.0]) for i in range(len(und))]
+
+        try:
+            R1, t1, _R2, _t2 = _goppnpl.GOOPPnPL_main(Pp, i_Pp, [], [], [1, 0, 0])
+        except Exception:
+            return None
+
+        return (np.asarray(R1, dtype=np.float64),
+                np.asarray(t1, dtype=np.float64).flatten())

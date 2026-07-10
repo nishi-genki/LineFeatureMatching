@@ -376,7 +376,7 @@ def process_video(cfg: dict):
                                                       sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
                                                       ransac_thresh_px=float(lm_cfg.get("ransac_thresh_px", 10.0)),
                                                       robust_method=lm_cfg.get("robust_method", "magsac"),
-                                                      ambiguity_ratio=float(lm_cfg.get("ambiguity_ratio", 1.5)))
+                                                      y_down_constraint=bool(lm_cfg.get("y_down_constraint", True)))
                         # ── 姿勢ジャンプゲート ──────────────────────
                         # 前フレーム姿勢からの回転・カメラ位置の跳びが物理的に
                         # あり得ない大きさなら棄却する（反転解・破綻解の入口対策）。
@@ -457,6 +457,20 @@ def process_video(cfg: dict):
             print(f"[INFO] MAGSAC 診断ログ → {diag_path}  ({len(MAGSAC_DIAG)} 呼び出し)")
     except Exception as e:
         print(f"[WARN] MAGSAC 診断ログ出力失敗: {e}", file=sys.stderr)
+
+    # ── GOOPPnPL 解診断ログの書き出し ─────────────────────────────
+    try:
+        from line_pose import POSE_DIAG
+        if POSE_DIAG:
+            diag_path = frames_dir / "pose_diag.csv"
+            with open(diag_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(POSE_DIAG[0].keys()))
+                w.writeheader()
+                w.writerows(POSE_DIAG)
+            n_calls = POSE_DIAG[-1]["call_id"] + 1
+            print(f"[INFO] GOOPPnPL 解診断ログ → {diag_path}  ({n_calls} 呼び出し)")
+    except Exception as e:
+        print(f"[WARN] GOOPPnPL 解診断ログ出力失敗: {e}", file=sys.stderr)
 
     avg = total_matches / max(frame_idx - 1, 1)
     print(f"\n[DONE] 処理フレーム数: {frame_idx - 1}")

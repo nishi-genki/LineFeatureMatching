@@ -1,7 +1,7 @@
 {
   "io": {
     "input": "video/16.mp4",
-    "output": "output/video/edlines_ransac_LBDandKika_gate.mp4",
+    "output": "output/video/test2.mp4",
     "csv": "",
     "fallback_fps": 30,
     "use_fixed_seed": false,
@@ -74,7 +74,7 @@
     "sigma_max_px": 20.0,
     "robust_method": "ransac",
     "ransac_thresh_px": 15.0,
-    "ambiguity_ratio": 5.0,
+    "y_down_constraint": true,
     "max_rot_jump_deg": 20.0,
     "max_trans_jump": -1.0
   },

@@ -240,9 +240,189 @@ GOOPPnPL_main (
   return std::make_tuple(R1, t1, R2, t2);
 }
 
+/* 全候補解を返す版 ******************************************************** *
+ * 戻り値: (R1, t1, R2, t2, all_solutions)
+ *   R1, t1, R2, t2 : GOOPPnPL_main と同じ OIPnPL 改良済み上位2解
+ *   all_solutions  : 大域解法の全候補 (R, t, J, is_real, is_front) のリスト
+ *                    （J 昇順、逆回転適用済み、OIPnPL 改良なし）
+ *                    is_front はデータ点の平均がカメラ前方に投影されるか
+ * ************************************************************************* */
+std::tuple<Eigen::Matrix3d, Eigen::Vector3d, Eigen::Matrix3d, Eigen::Vector3d,
+	   std::vector<std::tuple<Eigen::Matrix3d, Eigen::Vector3d,
+				  double, bool, bool>>>
+GOOPPnPL_all (
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& Pp_,   // 3次元点の座標（点特徴）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& i_Pp_, // 2次元点の座標（3要素目に焦点距離）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& Pl_,   // 3次元線分の座標（始点, 終点, ..の並び）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& i_Pl_, // 2次元線分の座標（3要素目に焦点距離）
+  std::array<int, 3> use_flag // 使用する特徴（点、線（直線上の点）、線（ベクトル））
+) {
+  /* データ形式変換 */
+  std::vector<Eigen::Vector3d> Pp;
+  std::vector<Eigen::Vector3d> i_Pp;
+  for (int i = 0; i < Pp_.size(); i++) {
+    Pp.push_back(Pp_[i]);
+    i_Pp.push_back(i_Pp_[i]);
+  }
+  std::vector<Eigen::Vector3d> Pl;
+  std::vector<Eigen::Vector3d> i_Pl;
+  for (int i = 0; i < Pl_.size(); i++) {
+    Pl.push_back(Pl_[i]);
+    i_Pl.push_back(i_Pl_[i]);
+  }
+
+  /* 射影行列の計算 */
+  std::vector<Eigen::Matrix3d> Vp;
+  std::vector<Eigen::Matrix3d> Vl;
+  compute_point_projection_matrix(i_Pp, Vp);
+  compute_line_projection_matrix(i_Pl, Vl);
+
+  /* 3次元線分の中点を計算 */
+  std::vector<Eigen::Vector3d> Pl_m;
+  for (int i = 0; i+1 < Pl.size(); i+=2) {
+    Eigen::Vector3d p_m = (Pl[i] + Pl[i+1]) / 2;
+    Pl_m.push_back(p_m);
+  }
+
+  /* 3次元直線の方向ベクトルの計算 */
+  std::vector<Eigen::Vector3d> Pd;
+  for (int i = 0; i+1 < Pl.size(); i+=2) {
+    Eigen::Vector3d d = Pl[i+1] - Pl[i];
+    Pd.push_back(d);
+  }
+
+  /* 有効な解が計算されるまで繰り返す */
+  std::vector<Solution> solution;
+  while(1){
+    /* 3次元データをランダムに回転 */
+    Eigen::Matrix3d R = create_rotation();
+    std::vector<Eigen::Vector3d> Pp_rot = Pp;
+    std::vector<Eigen::Vector3d> Pl_m_rot = Pl_m;
+    std::vector<Eigen::Vector3d> Pd_rot = Pd;
+    rotate_data(R, Pp_rot);
+    rotate_data(R, Pl_m_rot);
+    rotate_data(R, Pd_rot);
+
+    solution.clear();
+    bool result = GOPPnPL (Pp_rot, Vp, Pl_m_rot, Vl, Pd_rot, Vl, solution, use_flag, false, false);
+
+    /* もとに戻す（全解に適用） */
+    for (size_t n = 0; n < solution.size(); n++) {
+      solution[n].R = solution[n].R * R;
+    }
+
+    if (result && check_position(solution[0].R, solution[0].t, Pp, Pl_m)) break;
+  }
+
+  /* データをまとめる */
+  std::vector<Eigen::Vector3d> P;
+  std::vector<Eigen::Matrix3d> V;
+  if (use_flag[0] == 1) {
+    for (size_t n = 0; n < Pp.size(); n++)  {
+      P.push_back (Pp[n]);
+      V.push_back (Vp[n]);
+    }
+  }
+  if (use_flag[1] == 1 ||
+      (use_flag[0] == 0 && use_flag[1] == 0 && use_flag[2] == 1)) {
+    for (size_t n = 0; n < Pl_m.size(); n++)  {
+      P.push_back (Pl_m[n]);
+      V.push_back (Vl[n]);
+    }
+  }
+
+  /* 大域最適解法で計算した解を初期値として反復解法を適用 */
+  Eigen::Matrix3d R1 = solution[0].R;
+  Eigen::Vector3d t1;
+  OIPnPL (P, V, Pd, Vl, R1, t1, use_flag, 0, 1e-12);
+
+  Eigen::Matrix3d R2 = solution[1].R;
+  Eigen::Vector3d t2;
+  OIPnPL (P, V, Pd, Vl, R2, t2, use_flag, 0, 1e-12);
+
+  /* 全候補解をタプルに変換 */
+  std::vector<std::tuple<Eigen::Matrix3d, Eigen::Vector3d,
+			 double, bool, bool>> all_solutions;
+  for (size_t n = 0; n < solution.size(); n++) {
+    bool is_front = check_position (solution[n].R, solution[n].t, Pp, Pl_m);
+    all_solutions.push_back (std::make_tuple (solution[n].R, solution[n].t,
+					      solution[n].J, solution[n].is_real,
+					      is_front));
+  }
+
+  return std::make_tuple(R1, t1, R2, t2, all_solutions);
+}
+
+/* 任意の初期回転から OIPnPL で反復改良する ******************************** *
+ * GOOPPnPL_all で選んだ生の候補解（上位2解以外）を改良するための関数。
+ * データの組み立ては GOOPPnPL_main と同一。
+ * ************************************************************************* */
+std::tuple<Eigen::Matrix3d, Eigen::Vector3d>
+OIPnPL_refine (
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& Pp_,   // 3次元点の座標（点特徴）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& i_Pp_, // 2次元点の座標（3要素目に焦点距離）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& Pl_,   // 3次元線分の座標（始点, 終点, ..の並び）
+  std::vector<Eigen::Ref<const Eigen::Vector3d>>& i_Pl_, // 2次元線分の座標（3要素目に焦点距離）
+  std::array<int, 3> use_flag,
+  const Eigen::Matrix3d& R_init                          // 初期回転行列
+) {
+  /* データ形式変換 */
+  std::vector<Eigen::Vector3d> Pp;
+  std::vector<Eigen::Vector3d> i_Pp;
+  for (int i = 0; i < Pp_.size(); i++) {
+    Pp.push_back(Pp_[i]);
+    i_Pp.push_back(i_Pp_[i]);
+  }
+  std::vector<Eigen::Vector3d> Pl;
+  std::vector<Eigen::Vector3d> i_Pl;
+  for (int i = 0; i < Pl_.size(); i++) {
+    Pl.push_back(Pl_[i]);
+    i_Pl.push_back(i_Pl_[i]);
+  }
+
+  /* 射影行列の計算 */
+  std::vector<Eigen::Matrix3d> Vp;
+  std::vector<Eigen::Matrix3d> Vl;
+  compute_point_projection_matrix(i_Pp, Vp);
+  compute_line_projection_matrix(i_Pl, Vl);
+
+  /* 3次元線分の中点・方向ベクトル */
+  std::vector<Eigen::Vector3d> Pl_m;
+  std::vector<Eigen::Vector3d> Pd;
+  for (int i = 0; i+1 < Pl.size(); i+=2) {
+    Pl_m.push_back((Pl[i] + Pl[i+1]) / 2);
+    Pd.push_back(Pl[i+1] - Pl[i]);
+  }
+
+  /* データをまとめる */
+  std::vector<Eigen::Vector3d> P;
+  std::vector<Eigen::Matrix3d> V;
+  if (use_flag[0] == 1) {
+    for (size_t n = 0; n < Pp.size(); n++)  {
+      P.push_back (Pp[n]);
+      V.push_back (Vp[n]);
+    }
+  }
+  if (use_flag[1] == 1 ||
+      (use_flag[0] == 0 && use_flag[1] == 0 && use_flag[2] == 1)) {
+    for (size_t n = 0; n < Pl_m.size(); n++)  {
+      P.push_back (Pl_m[n]);
+      V.push_back (Vl[n]);
+    }
+  }
+
+  Eigen::Matrix3d R = R_init;
+  Eigen::Vector3d t;
+  OIPnPL (P, V, Pd, Vl, R, t, use_flag, 0, 1e-12);
+
+  return std::make_tuple(R, t);
+}
+
 PYBIND11_MODULE(GOOPPnPL, m) {
   m.doc() = "GOOPPnPL pose estimation module";
   m.def("GOOPPnPL_main", &GOOPPnPL_main, "姿勢推定メイン関数");
+  m.def("GOOPPnPL_all", &GOOPPnPL_all, "姿勢推定（全候補解も返す）");
+  m.def("OIPnPL_refine", &OIPnPL_refine, "任意の初期回転からのOIPnPL反復改良");
 }
 
 /* ******************************************************* End of main.c *** */

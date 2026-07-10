@@ -14,7 +14,10 @@ GOOPPnPL_main の入力:
   i_Pl : 2D 線分の始点・終点を交互に並べたリスト、各要素は (x-cx, y-cy, f)
   use_flag : [点, 線(位置), 線(方向)] を 0/1 で選択
 
-戻り値: (R1, t1, R2, t2) — 2 候補解。コストの低い方を採用。
+解の選択: GOOPPnPL_all の全候補（J昇順）から
+  実数解 & カメラ前方 & カメラY軸下向き(r12<0) & 再投影残差有限
+を満たす J 最小の候補を採用し OIPnPL で改良する（鏡映反転解対策）。
+フィルタ全滅時は上位2解から参照姿勢に近い方（無ければ残差の小さい方）。
 """
 
 import math
@@ -120,6 +123,11 @@ _ANGLE_PREFILTER_DEG = 45.0
 # MAGSAC 診断ログ（呼び出しごとに σ 推定の内訳を蓄積。main.py が CSV に出力する）
 MAGSAC_DIAG: list[dict] = []
 
+# GOOPPnPL 解診断ログ（最終姿勢推定ごとに全候補解を蓄積。main.py が CSV に出力する）
+# 1行 = 1候補解。kind="refined" は OIPnPL 改良済みの上位2解（実際の選択対象）、
+# kind="cand" は大域解法の生の候補解（J 昇順）。
+POSE_DIAG: list[dict] = []
+
 
 def _line_residual(proj, kl, R: np.ndarray, t: np.ndarray, K: np.ndarray) -> float:
     """
@@ -193,7 +201,7 @@ def _magsac_inliers(
     sigma_max_px: float,
     use_direction: bool = True,
     R_ref: "Optional[np.ndarray]" = None,
-    ambiguity_ratio: float = 1.5,
+    y_down_constraint: bool = True,
 ) -> list[int]:
     """
     MAGSAC (d=2) でインライアインデックスを返す。
@@ -215,7 +223,8 @@ def _magsac_inliers(
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
 
-        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref, ambiguity_ratio)
+        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref,
+                                   y_down_constraint)
         if pose is None:
             continue
         R_s, t_s = pose
@@ -248,7 +257,7 @@ def _magsac_inliers(
             break
         lo_pose = _estimate_pose_core(
             [correspondences[i] for i in lo_idx], K, min_lines, use_direction,
-            R_ref, ambiguity_ratio,
+            R_ref, y_down_constraint,
         )
         if lo_pose is None:
             break
@@ -308,7 +317,7 @@ def _ransac_inliers(
     inlier_thresh_px: float,
     use_direction: bool = True,
     R_ref: "Optional[np.ndarray]" = None,
-    ambiguity_ratio: float = 1.5,
+    y_down_constraint: bool = True,
 ) -> list[int]:
     """
     RANSACでインライアインデックスを返す。
@@ -325,7 +334,8 @@ def _ransac_inliers(
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
 
-        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref, ambiguity_ratio)
+        pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref,
+                                   y_down_constraint)
         if pose is None:
             continue
         R_s, t_s = pose
@@ -351,18 +361,86 @@ def _rotation_angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, cos_a))))
 
 
+def _append_pose_diag(all_sols, R1, t1, R2, t2, res1, res2,
+                      selected, correspondences, K, R_ref):
+    """GOOPPnPL の全候補解を POSE_DIAG に追記する。
+
+    kind="refined": OIPnPL 改良済みの上位2解。idx は 1/2。
+    kind="cand"   : 大域解法の生の候補解（J 昇順）。複素解 (is_real=False) の
+                    R/t は実部のみで構成されるため幾何的な意味を持たない。
+    cam_x/y/z     : カメラ中心 -Rᵀt（鏡映解は原点対称に現れるため確認用）
+    selected      : ("refined", 1/2) または ("cand", idx)。採用された行に True が付く
+    """
+    call_id = POSE_DIAG[-1]["call_id"] + 1 if POSE_DIAG else 0
+    n_corr = len(correspondences)
+    if selected[0] == "refined":
+        R_sel = R1 if selected[1] == 1 else R2
+    else:
+        R_sel = np.asarray(all_sols[selected[1]][0], dtype=np.float64)
+
+    def _row(kind, idx, R, t, J, is_real, is_front, residual):
+        R = np.asarray(R, dtype=np.float64)
+        t = np.asarray(t, dtype=np.float64).flatten()
+        c = -R.T @ t
+        return {
+            "call_id":     call_id,
+            "n_corr":      n_corr,
+            "kind":        kind,
+            "idx":         idx,
+            "J":           J,
+            "is_real":     is_real,
+            "is_front":    is_front,
+            "residual":    residual,
+            "rot_vs_ref":  _rotation_angle_deg(R, R_ref) if R_ref is not None else float('nan'),
+            "rot_vs_sel":  _rotation_angle_deg(R, R_sel),
+            "cam_x":       float(c[0]),
+            "cam_y":       float(c[1]),
+            "cam_z":       float(c[2]),
+            # カメラY軸のワールドZ成分。「カメラYが下向き ⇔ R[1,2]<0」仮説の検証用
+            "r12":         float(R[1, 2]),
+            "selected":    ((kind, idx) == selected),
+        }
+
+    POSE_DIAG.append(_row("refined", 1, R1, t1, float('nan'), True, None, res1))
+    POSE_DIAG.append(_row("refined", 2, R2, t2, float('nan'), True, None, res2))
+
+    for i, (R, t, J, is_real, is_front) in enumerate(all_sols):
+        residual = float('nan')
+        if is_real:
+            residual = sum(
+                _line_residual(item[0], item[1],
+                               np.asarray(R, dtype=np.float64),
+                               np.asarray(t, dtype=np.float64).flatten(), K)
+                for item in correspondences
+            )
+        POSE_DIAG.append(_row("cand", i, R, t, J, is_real, is_front, residual))
+
+
 def _estimate_pose_core(
     correspondences: list,
     K: np.ndarray,
     min_lines: int = 3,
     use_direction: bool = True,
     R_ref: Optional[np.ndarray] = None,
-    ambiguity_ratio: float = 1.5,
+    y_down_constraint: bool = True,
+    collect_diag: bool = False,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """GOOPPnPLで姿勢推定する（ロバスト推定なし）。
-    R_ref: 参照回転行列（前フレーム姿勢など）。2候補解の残差が拮抗している
-    場合に、回転が近い方を選ぶために使う（鏡映姿勢の曖昧性解消）。
-    ambiguity_ratio: 残差比がこの値以内なら「拮抗」とみなす。"""
+
+    選択規則: 全候補解（J昇順）から
+      is_real（実数解）& is_front（点群がカメラ前方）
+      & r12<0（カメラY軸が下向き、y_down_constraint 有効時）
+      & 再投影残差が有限
+    を満たす最初の候補（=J最小）を採用し、OIPnPL で反復改良する。
+    反転解は「上下反転系統（r12>0）」か「平面裏側への鏡映系統（front=False）」に
+    落ちるため、このフィルタで選択の土俵から排除される（pose_diag解析で実証）。
+
+    フィルタを通る候補が無い場合は上位2解から R_ref に回転が近い方
+    （参照が無ければ残差の小さい方）を選ぶ。
+    R_ref: 参照回転行列（前フレーム姿勢など）。フォールバック時のみ使用。
+    y_down_constraint: カメラY軸が常に下向き（ワールドZが上向き）という
+    リグ前提を使うか。構図が変わる場合は config で無効化する。
+    collect_diag: True なら全候補解を POSE_DIAG に蓄積する。"""
     if not _GOPPNPL_AVAILABLE:
         return None
 
@@ -386,8 +464,12 @@ def _estimate_pose_core(
 
     use_flag = [0, 1, 1 if use_direction else 0]
 
+    all_sols = None
     try:
-        R1, t1, R2, t2 = _goppnpl.GOOPPnPL_main([], [], Pl, i_Pl, use_flag)
+        if hasattr(_goppnpl, "GOOPPnPL_all"):
+            R1, t1, R2, t2, all_sols = _goppnpl.GOOPPnPL_all([], [], Pl, i_Pl, use_flag)
+        else:
+            R1, t1, R2, t2 = _goppnpl.GOOPPnPL_main([], [], Pl, i_Pl, use_flag)
     except Exception:
         return None
 
@@ -396,29 +478,59 @@ def _estimate_pose_core(
     R2 = np.asarray(R2, dtype=np.float64)
     t2 = np.asarray(t2, dtype=np.float64).flatten()
 
-    # 再投影残差の小さい方を採用する。
-    # 非物理解（カメラ後方投影）は残差が inf になるため自動的に排除される。
-    # ソルバーのコスト J はキラリティを区別できないので判定には使わない。
     def _total_residual(R, t):
         return sum(
             _line_residual(item[0], item[1], R, t, K)
             for item in correspondences
         )
 
-    res1 = _total_residual(R1, t1)
-    res2 = _total_residual(R2, t2)
+    # ── 全候補からの選択（docstring の選択規則を参照）──
+    sel = ("refined", 1)
+    R_out = t_out = None
+    if all_sols is not None:
+        for i, (R_c, t_c, J_c, is_real, is_front) in enumerate(all_sols):  # J昇順
+            if not (is_real and is_front):
+                continue
+            R_c = np.asarray(R_c, dtype=np.float64)
+            t_c = np.asarray(t_c, dtype=np.float64).flatten()
+            if y_down_constraint and R_c[1, 2] >= 0.0:
+                continue
+            if _total_residual(R_c, t_c) == float('inf'):
+                continue
+            sel = ("cand", i)
+            if i == 0:            # idx 0/1 の改良版は R1/R2 として計算済み
+                R_out, t_out = R1, t1
+            elif i == 1:
+                R_out, t_out = R2, t2
+            elif hasattr(_goppnpl, "OIPnPL_refine"):
+                try:
+                    R_r, t_r = _goppnpl.OIPnPL_refine([], [], Pl, i_Pl, use_flag, R_c)
+                    R_out = np.asarray(R_r, dtype=np.float64)
+                    t_out = np.asarray(t_r, dtype=np.float64).flatten()
+                except Exception:
+                    R_out, t_out = R_c, t_c
+            else:
+                R_out, t_out = R_c, t_c
+            break
 
-    # 平面的な線分配置では鏡映姿勢の残差がほぼ同じになり、残差比較だけでは
-    # 反転解を選んでしまうことがある。残差が拮抗している場合は参照姿勢
-    # （前フレーム姿勢）に回転が近い方を選ぶ。
-    if (R_ref is not None
-            and res1 < float('inf') and res2 < float('inf')
-            and max(res1, res2) <= ambiguity_ratio * min(res1, res2)):
-        a1 = _rotation_angle_deg(R1, R_ref)
-        a2 = _rotation_angle_deg(R2, R_ref)
-        return (R1, t1) if a1 <= a2 else (R2, t2)
+    # フォールバック: フィルタを通る候補が無い場合は上位2解から
+    # R_ref に回転が近い方（参照が無ければ残差の小さい方）を選ぶ。
+    if R_out is None:
+        if R_ref is not None:
+            a1 = _rotation_angle_deg(R1, R_ref)
+            a2 = _rotation_angle_deg(R2, R_ref)
+            idx = 1 if a1 <= a2 else 2
+        else:
+            idx = 2 if _total_residual(R2, t2) < _total_residual(R1, t1) else 1
+        sel = ("refined", idx)
+        R_out, t_out = (R1, t1) if idx == 1 else (R2, t2)
 
-    return (R2, t2) if res2 < res1 else (R1, t1)
+    if collect_diag and all_sols is not None:
+        _append_pose_diag(all_sols, R1, t1, R2, t2,
+                          _total_residual(R1, t1), _total_residual(R2, t2),
+                          sel, correspondences, K, R_ref)
+
+    return R_out, t_out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,19 +546,20 @@ def estimate_from_lines(
     robust_method:    str   = "magsac",  # "magsac" / "ransac" / "none"
     sigma_max_px:     float = 20.0,
     ransac_thresh_px: float = 10.0,
-    ambiguity_ratio:  float = 1.5,
+    y_down_constraint: bool = True,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """
     2D-3D 線分対応から姿勢 (R, t) を推定する。
 
-    R_init           : 参照回転行列。GOOPPnPL の2候補解の残差が拮抗している場合、
-                       回転が近い方を選ぶ（平面的シーンでの反転解対策）。None 可
+    R_init           : 参照回転行列。候補フィルタが全滅した場合のフォールバックで
+                       回転が近い方を選ぶのに使う。None 可
     correspondences  : [(ProjectedLine, KeyLine, kl_idx), ...] の対応リスト
     K                : 3×3 カメラ内部行列
     robust_method    : ロバスト推定手法 ("magsac" / "ransac" / "none")
     sigma_max_px     : MAGSACのノイズスケール上限 [px]
     ransac_thresh_px : RANSACのインライア判定閾値 [px]
-    ambiguity_ratio  : 2候補の残差比がこの値以内なら拮抗とみなし R_init との回転差で選ぶ
+    y_down_constraint: カメラY軸が常に下向きというリグ前提で候補解を
+                       フィルタする（鏡映反転解対策）。構図が変わる場合は無効化
     """
     if not _GOPPNPL_AVAILABLE:
         return None
@@ -464,14 +577,15 @@ def estimate_from_lines(
         if robust_method == "magsac":
             inlier_idx = _magsac_inliers(
                 correspondences, K, min_lines, n_iter, sigma_max_px, use_direction,
-                R_ref, ambiguity_ratio,
+                R_ref, y_down_constraint,
             )
         else:  # ransac
             inlier_idx = _ransac_inliers(
                 correspondences, K, min_lines, n_iter, ransac_thresh_px, use_direction,
-                R_ref, ambiguity_ratio,
+                R_ref, y_down_constraint,
             )
         if inlier_idx:
             correspondences = [correspondences[i] for i in inlier_idx]
 
-    return _estimate_pose_core(correspondences, K, min_lines, use_direction, R_ref, ambiguity_ratio)
+    return _estimate_pose_core(correspondences, K, min_lines, use_direction, R_ref,
+                               y_down_constraint, collect_diag=True)

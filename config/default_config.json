@@ -74,7 +74,7 @@
     "sigma_max_px": 20.0,
     "robust_method": "magsac",
     "ransac_thresh_px": 10.0,
-    "ambiguity_ratio": 1.5,
+    "y_down_constraint": true,
     "max_rot_jump_deg": -1.0,
     "max_trans_jump": -1.0
   },
