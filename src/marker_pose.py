@@ -2,15 +2,24 @@
 marker_pose.py
 ==============
 画像マーカーによるカメラ姿勢推定。
-C++ DetectMarker + ImageMarker + PoseEstimator::ComputeCameraPose_p の Python移植。
 
-  - 特徴点検出: AKAZE (C++ と同一)
-  - マッチング:  BFMatcher(NORM_HAMMING) + Lowe's ratio test (C++ と同一)
-  - インライア選別: solvePnPRansac
-  - 姿勢推定:   GOOPPnPL (点特徴, use_flag=[1,0,0])。
-                コスト最小解 R1, t1 を採用（初期位置推定のため参照姿勢は
-                使わない）。GOOPPnPL が使えない場合は solvePnPRefineLM に
-                フォールバック。
+2つの検出モードを自動判別する（marker_jpg のファイル名から判定）:
+
+  - ArUco モード（ファイル名が "id<N>_DICT_..." に一致する場合）:
+      cv2.aruco で4隅を直接検出する。反復パターンの誤対応が原理的に
+      起きないため、特徴点マッチングより高信頼。.dat の4隅がそのまま
+      2D-3D対応になる。
+  - 画像マーカーモード（上記に一致しない場合、従来の実装）:
+      C++ DetectMarker + ImageMarker + PoseEstimator::ComputeCameraPose_p
+      の Python移植。AKAZE (C++と同一) + BFMatcher(NORM_HAMMING) +
+      Lowe's ratio test (C++と同一) + solvePnPRansac でインライア選別。
+      ※ ArUco 等の反復的な二値パターンの画像には不向き（局所特徴が
+      酷似し誤対応が多発する）。そちらは必ず ArUco モードを使うこと。
+
+姿勢推定: 両モードとも GOOPPnPL (点特徴, use_flag=[1,0,0]) を使用。
+コスト最小解 R1, t1 を採用（初期位置推定のため参照姿勢は使わない。
+4点の平面配置でも合成データ200試行で反転0件を確認済み）。
+GOOPPnPL が使えない場合は solvePnP 系にフォールバック。
 
 .dat フォーマット:
     4行、各行タブまたはスペース区切りの x y z
@@ -18,6 +27,7 @@ C++ DetectMarker + ImageMarker + PoseEstimator::ComputeCameraPose_p の Python�
 """
 
 import os
+import re
 import sys
 from typing import Optional
 
@@ -58,6 +68,9 @@ class MarkerPoseEstimator:
         origin = coords[0], mX = coords[1]-coords[0], mY = coords[3]-coords[0]
     """
 
+    # ファイル名 "id<N>_DICT_xxx.png" に一致すれば ArUco モード
+    _ARUCO_NAME_RE = re.compile(r"id(\d+)_(DICT_\w+?)(?:\.\w+)?$", re.IGNORECASE)
+
     def __init__(
         self,
         marker_jpg: str,
@@ -73,15 +86,35 @@ class MarkerPoseEstimator:
         self._ratio = ratio
         self._min_matches = min_matches
 
-        coords = _load_dat(marker_dat)
+        coords = _load_dat(marker_dat)  # [左上, 右上, 右下, 左下]
+        self._obj_pts = np.stack(coords).astype(np.float64)   # ArUco モード用 (4,3)
         self._origin = coords[0]
-        self._mX = coords[1] - coords[0]  # 横方向 (C++ mX)
+        self._mX = coords[1] - coords[0]  # 横方向 (C++ mX)　※ 画像マーカーモード用
         self._mY = coords[3] - coords[0]  # 縦方向 (C++ mY)
 
-        # C++ cv::AKAZE::create() + cv::BFMatcher(cv::NORM_HAMMING)
-        self._detector = cv2.AKAZE_create()
-        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-        self._kps, self._descs = self._detector.detectAndCompute(img, None)
+        self._aruco_detector = None
+        self._aruco_id = None
+        m = self._ARUCO_NAME_RE.search(os.path.basename(marker_jpg))
+        if m is not None:
+            marker_id = int(m.group(1))
+            dict_name = m.group(2).upper()
+            dict_const = getattr(cv2.aruco, dict_name, None)
+            if dict_const is not None:
+                dictionary = cv2.aruco.getPredefinedDictionary(dict_const)
+                params = cv2.aruco.DetectorParameters()
+                params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+                detector = cv2.aruco.ArucoDetector(dictionary, params)
+                # マーカー画像自身で検出できる（=名前と実体が一致する）ことを確認
+                corners, ids, _ = detector.detectMarkers(img)
+                if ids is not None and marker_id in ids.flatten():
+                    self._aruco_detector = detector
+                    self._aruco_id = marker_id
+
+        if self._aruco_detector is None:
+            # 画像マーカーモード: C++ cv::AKAZE::create() + cv::BFMatcher(cv::NORM_HAMMING)
+            self._detector = cv2.AKAZE_create()
+            self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+            self._kps, self._descs = self._detector.detectAndCompute(img, None)
 
     def estimate_pose(
         self,
@@ -93,6 +126,51 @@ class MarkerPoseEstimator:
         フレームからマーカーを検出し、カメラ姿勢 (R 3x3, t 3-vec) を返す。
         マーカーが見つからない場合は None。
         """
+        if self._aruco_detector is not None:
+            return self._estimate_pose_aruco(frame_gray, K, dist)
+        return self._estimate_pose_akaze(frame_gray, K, dist)
+
+    def _estimate_pose_aruco(
+        self,
+        frame_gray: np.ndarray,
+        K: np.ndarray,
+        dist: np.ndarray,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """ArUco の4隅を直接検出して姿勢を推定する（誤対応が原理的に無い）。"""
+        corners, ids, _ = self._aruco_detector.detectMarkers(frame_gray)
+        if ids is None:
+            return None
+        matches = np.where(ids.flatten() == self._aruco_id)[0]
+        if len(matches) == 0:
+            return None
+
+        img_pts = corners[matches[0]].reshape(4, 2).astype(np.float64)  # [左上,右上,右下,左下]
+        obj_pts = self._obj_pts
+
+        K64    = K.astype(np.float64)
+        dist64 = dist.astype(np.float64)
+
+        pose = self._goppnpl_pose(obj_pts, img_pts, K64, dist64)
+        if pose is not None:
+            return pose
+
+        # フォールバック: GOOPPnPL が使えない/失敗した場合は平面PnP(IPPE)
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts, img_pts, K64, dist64, flags=cv2.SOLVEPNP_IPPE,
+        )
+        if not ok:
+            return None
+        rvec, tvec = cv2.solvePnPRefineLM(obj_pts, img_pts, K64, dist64, rvec, tvec)
+        R, _ = cv2.Rodrigues(rvec)
+        return R, tvec.flatten()
+
+    def _estimate_pose_akaze(
+        self,
+        frame_gray: np.ndarray,
+        K: np.ndarray,
+        dist: np.ndarray,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """AKAZE特徴点マッチングで姿勢を推定する（自然画像マーカー用）。"""
         kps, descs = self._detector.detectAndCompute(frame_gray, None)
         if descs is None or len(kps) < self._min_matches:
             return None

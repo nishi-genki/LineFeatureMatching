@@ -75,6 +75,52 @@ class LineProjector:
         self._dist = np.array(dist, dtype=np.float64).flatten()
         self._lines3d = lines3d
         self._img_size = img_size  # (width, height)
+        self._norm_bounds = self._compute_norm_bounds()
+
+    def _compute_norm_bounds(self) -> tuple[float, float, float, float]:
+        """画像四隅を歪み補正した正規化座標の範囲（安全マージン付き）を返す。
+        歪み多項式(k1,k2,k3)は画角内でのみ妥当で、画角を大きく超える点に
+        適用すると発散し無意味な座標になる。視野を大きく外れる線分の端点は
+        歪み補正の前に（正規化座標の直線クリップで）切り詰めることで、
+        多項式を発散域で評価しないようにする。"""
+        w, h = self._img_size
+        corners = np.array([[0, 0], [w, 0], [w, h], [0, h]],
+                           dtype=np.float64).reshape(-1, 1, 2)
+        und = cv2.undistortPoints(corners, self._K, self._dist).reshape(-1, 2)
+        margin = 1.3
+        cx_n = (und[:, 0].min() + und[:, 0].max()) / 2
+        cy_n = (und[:, 1].min() + und[:, 1].max()) / 2
+        hx = (und[:, 0].max() - und[:, 0].min()) / 2 * margin
+        hy = (und[:, 1].max() - und[:, 1].min()) / 2 * margin
+        return (cx_n - hx, cx_n + hx, cy_n - hy, cy_n + hy)
+
+    @staticmethod
+    def _clip_segment_box(
+        x1: float, y1: float, x2: float, y2: float,
+        xmin: float, xmax: float, ymin: float, ymax: float,
+    ) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
+        """Liang-Barsky法で線分を矩形にクリップする。範囲外なら None。"""
+        dx, dy = x2 - x1, y2 - y1
+        p = (-dx, dx, -dy, dy)
+        q = (x1 - xmin, xmax - x1, y1 - ymin, ymax - y1)
+        t0, t1 = 0.0, 1.0
+        for pi, qi in zip(p, q):
+            if pi == 0:
+                if qi < 0:
+                    return None
+                continue
+            t = qi / pi
+            if pi < 0:
+                if t > t1:
+                    return None
+                t0 = max(t0, t)
+            else:
+                if t < t0:
+                    return None
+                t1 = min(t1, t)
+        if t0 > t1:
+            return None
+        return (x1 + t0 * dx, y1 + t0 * dy), (x1 + t1 * dx, y1 + t1 * dy)
 
     def project_lines(
         self,
@@ -87,7 +133,7 @@ class LineProjector:
         """
         result: list[ProjectedLine] = []
         for p1_w, p2_w in self._lines3d:
-            pts2d = []
+            norm_pts = []
             valid = True
             for Pw in (p1_w, p2_w):
                 Xc = R @ Pw + t
@@ -95,18 +141,28 @@ class LineProjector:
                 if Z <= 0.0:
                     valid = False
                     break
-                u, v = self._project_point(Xc[0] / Z, Xc[1] / Z)
-                pts2d.append((u, v))
+                norm_pts.append((Xc[0] / Z, Xc[1] / Z))
+            if not valid:
+                continue
 
-            if valid and len(pts2d) == 2:
-                clipped = self._clip_to_image(pts2d[0], pts2d[1])
-                if clipped is not None:
-                    result.append(ProjectedLine(
-                        p1_3d=p1_w,
-                        p2_3d=p2_w,
-                        pt1_2d=clipped[0],
-                        pt2_2d=clipped[1],
-                    ))
+            # 歪み補正の前に正規化座標でクリップする（画角を大きく超える点に
+            # 歪み多項式を適用すると発散するため。_compute_norm_bounds 参照）。
+            clipped_norm = self._clip_segment_box(
+                norm_pts[0][0], norm_pts[0][1], norm_pts[1][0], norm_pts[1][1],
+                *self._norm_bounds,
+            )
+            if clipped_norm is None:
+                continue
+
+            pts2d = [self._project_point(x, y) for x, y in clipped_norm]
+            clipped = self._clip_to_image(pts2d[0], pts2d[1])
+            if clipped is not None:
+                result.append(ProjectedLine(
+                    p1_3d=p1_w,
+                    p2_3d=p2_w,
+                    pt1_2d=clipped[0],
+                    pt2_2d=clipped[1],
+                ))
         return result
 
     # ──────────────────────────────────────────

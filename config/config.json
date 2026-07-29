@@ -1,7 +1,7 @@
 {
   "io": {
-    "input": "video/16.mp4",
-    "output": "output/video/test2.mp4",
+    "input": "video/IMG_6058.MOV",
+    "output": "output/video/newscene_correction.mp4",
     "csv": "",
     "fallback_fps": 30,
     "use_fixed_seed": false,
@@ -46,19 +46,19 @@
     "vertical_epsilon": 0.0001
   },
   "camera": {
-    "fx": 1312.886,
-    "fy": 1314.631,
-    "cx": 969.339,
-    "cy": 535.420,
-    "dist": [0.22213989492998, -0.81727621570883, -0.00263513431066, 0.00197663686947, 1.02778002212845],
+    "fx": 1694.400466,
+    "fy": 1690.299550,
+    "cx": 950.015140,
+    "cy": 511.140341,
+    "dist": [0.174029, -0.737755, -0.000809, 0.000720, 1.135290],
     "width": 1920,
     "height": 1080
   },
   "projection": {
     "enable": true,
     "lines3d_csv": "data/lines3d.csv",
-    "marker_jpg": "markers/marker-07.jpg",
-    "marker_dat": "markers/marker-07.dat",
+    "marker_jpg": "markers/aruco/id0_DICT_4X4_50.png",
+    "marker_dat": "markers/aruco/id0_DICT_4X4_50.dat",
     "marker_ratio": 0.75,
     "marker_min_matches": 8,
     "color": [0, 0, 0],
