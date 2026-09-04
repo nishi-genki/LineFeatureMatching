@@ -1,7 +1,7 @@
 {
   "io": {
-    "input": "video/IMG_6058.MOV",
-    "output": "output/video/newscene_correction.mp4",
+    "input": "video/IMG_6062.MOV",
+    "output": "output/video/newscene_imagecorrection_6062.mp4",
     "csv": "",
     "fallback_fps": 30,
     "use_fixed_seed": false,

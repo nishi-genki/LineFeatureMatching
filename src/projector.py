@@ -3,6 +3,11 @@ projector.py
 ============
 3次元線分を画像平面へ投影する (C++ LineProjector / Lines3D の Python移植)。
 
+歪み補正は画像側（main.py がフレームを cv2.remap で undistort 済み）で
+一度だけ行う前提のため、ここでは歪みなしの純粋なピンホール投影のみを使う。
+歪んだ画像に合わせて投影側を歪ませていた旧実装（順方向歪み付加・視野外
+クリップ）は不要になったため廃止した。
+
 lines3d CSV フォーマット: x1,y1,z1,x2,y2,z2  (1行1線分)
 poses CSV フォーマット:    frame_idx,r11,r12,r13,r21,r22,r23,r31,r32,r33,tx,ty,tz
   * frame_idx は 0-based
@@ -56,7 +61,7 @@ def load_poses_csv(csv_path: str) -> dict[int, tuple[np.ndarray, np.ndarray]]:
 class LineProjector:
     """
     3次元線分を画像平面へ投影する。
-    C++ LineProjector::projectLines と同一のピンホール+歪み補正式を使用する。
+    フレーム側が undistort 済みである前提の、歪みなしピンホール投影。
     """
 
     def __init__(
@@ -65,62 +70,14 @@ class LineProjector:
         fy: float,
         cx: float,
         cy: float,
-        dist: list[float],
         lines3d: list[tuple[np.ndarray, np.ndarray]],
         img_size: tuple[int, int],
     ):
         self._K = np.array([[fx, 0.0, cx],
                             [0.0, fy, cy],
                             [0.0, 0.0, 1.0]], dtype=np.float64)
-        self._dist = np.array(dist, dtype=np.float64).flatten()
         self._lines3d = lines3d
         self._img_size = img_size  # (width, height)
-        self._norm_bounds = self._compute_norm_bounds()
-
-    def _compute_norm_bounds(self) -> tuple[float, float, float, float]:
-        """画像四隅を歪み補正した正規化座標の範囲（安全マージン付き）を返す。
-        歪み多項式(k1,k2,k3)は画角内でのみ妥当で、画角を大きく超える点に
-        適用すると発散し無意味な座標になる。視野を大きく外れる線分の端点は
-        歪み補正の前に（正規化座標の直線クリップで）切り詰めることで、
-        多項式を発散域で評価しないようにする。"""
-        w, h = self._img_size
-        corners = np.array([[0, 0], [w, 0], [w, h], [0, h]],
-                           dtype=np.float64).reshape(-1, 1, 2)
-        und = cv2.undistortPoints(corners, self._K, self._dist).reshape(-1, 2)
-        margin = 1.3
-        cx_n = (und[:, 0].min() + und[:, 0].max()) / 2
-        cy_n = (und[:, 1].min() + und[:, 1].max()) / 2
-        hx = (und[:, 0].max() - und[:, 0].min()) / 2 * margin
-        hy = (und[:, 1].max() - und[:, 1].min()) / 2 * margin
-        return (cx_n - hx, cx_n + hx, cy_n - hy, cy_n + hy)
-
-    @staticmethod
-    def _clip_segment_box(
-        x1: float, y1: float, x2: float, y2: float,
-        xmin: float, xmax: float, ymin: float, ymax: float,
-    ) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
-        """Liang-Barsky法で線分を矩形にクリップする。範囲外なら None。"""
-        dx, dy = x2 - x1, y2 - y1
-        p = (-dx, dx, -dy, dy)
-        q = (x1 - xmin, xmax - x1, y1 - ymin, ymax - y1)
-        t0, t1 = 0.0, 1.0
-        for pi, qi in zip(p, q):
-            if pi == 0:
-                if qi < 0:
-                    return None
-                continue
-            t = qi / pi
-            if pi < 0:
-                if t > t1:
-                    return None
-                t0 = max(t0, t)
-            else:
-                if t < t0:
-                    return None
-                t1 = min(t1, t)
-        if t0 > t1:
-            return None
-        return (x1 + t0 * dx, y1 + t0 * dy), (x1 + t1 * dx, y1 + t1 * dy)
 
     def project_lines(
         self,
@@ -129,11 +86,10 @@ class LineProjector:
     ) -> list[ProjectedLine]:
         """
         全3D線分を投影し、画像内にクリップされた ProjectedLine リストを返す。
-        C++ LineProjector::projectLines と同等。
         """
         result: list[ProjectedLine] = []
         for p1_w, p2_w in self._lines3d:
-            norm_pts = []
+            pts2d = []
             valid = True
             for Pw in (p1_w, p2_w):
                 Xc = R @ Pw + t
@@ -141,20 +97,10 @@ class LineProjector:
                 if Z <= 0.0:
                     valid = False
                     break
-                norm_pts.append((Xc[0] / Z, Xc[1] / Z))
+                pts2d.append(self._project_point(Xc[0] / Z, Xc[1] / Z))
             if not valid:
                 continue
 
-            # 歪み補正の前に正規化座標でクリップする（画角を大きく超える点に
-            # 歪み多項式を適用すると発散するため。_compute_norm_bounds 参照）。
-            clipped_norm = self._clip_segment_box(
-                norm_pts[0][0], norm_pts[0][1], norm_pts[1][0], norm_pts[1][1],
-                *self._norm_bounds,
-            )
-            if clipped_norm is None:
-                continue
-
-            pts2d = [self._project_point(x, y) for x, y in clipped_norm]
             clipped = self._clip_to_image(pts2d[0], pts2d[1])
             if clipped is not None:
                 result.append(ProjectedLine(
@@ -170,22 +116,9 @@ class LineProjector:
     # ──────────────────────────────────────────
 
     def _project_point(self, x: float, y: float) -> tuple[float, float]:
-        """正規化座標 (x, y) に歪み補正とカメラ行列を適用して画素座標を返す。
-        C++ と同一の式: radial + tangential distortion。"""
-        d = self._dist
-        k1 = d[0] if len(d) > 0 else 0.0
-        k2 = d[1] if len(d) > 1 else 0.0
-        p1 = d[2] if len(d) > 2 else 0.0
-        p2 = d[3] if len(d) > 3 else 0.0
-        k3 = d[4] if len(d) > 4 else 0.0
-
-        r2 = x * x + y * y
-        radial  = 1.0 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3
-        x_d = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
-        y_d = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
-
-        u = self._K[0, 0] * x_d + self._K[0, 2]
-        v = self._K[1, 1] * y_d + self._K[1, 2]
+        """正規化座標 (x, y) にカメラ行列を適用して画素座標を返す（歪みなし）。"""
+        u = self._K[0, 0] * x + self._K[0, 2]
+        v = self._K[1, 1] * y + self._K[1, 2]
         return u, v
 
     def _clip_to_image(

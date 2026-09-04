@@ -163,6 +163,8 @@ def process_video(cfg: dict):
     line_matcher = None
     K_mat = None
     dist_arr = None
+    undist_map1 = None
+    undist_map2 = None
     min_line_corr = int(lm_cfg.get("min_lines", 3))
     marker_init_frames = int(proj_cfg.get("marker_init_frames", -1))
 
@@ -191,13 +193,20 @@ def process_video(cfg: dict):
         K_mat = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
         dist_arr = np.array(cam_cfg["dist"], dtype=np.float64)
 
+        # 歪み補正はフレーム側で一度だけ行う（3D投影・マーカー検出は歪みなし
+        # ピンホール前提になる）。変換マップは解像度分の1回だけ計算して使い回す。
+        undist_map1, undist_map2 = cv2.initUndistortRectifyMap(
+            K_mat, dist_arr, None, K_mat, img_size, cv2.CV_32FC1
+        )
+        print("[INFO] フレーム歪み補正を有効化（cv2.remap、K・dist は camera 設定を使用）")
+
         lines3d_path = proj_cfg.get("lines3d_csv", "")
         if not lines3d_path:
             print("[WARN] projection.lines3d_csv が未設定のため投影をスキップします。", file=sys.stderr)
         else:
             try:
                 lines3d = load_lines3d_csv(lines3d_path)
-                projector = LineProjector(fx, fy, cx, cy, cam_cfg["dist"], lines3d, img_size)
+                projector = LineProjector(fx, fy, cx, cy, lines3d, img_size)
                 print(f"[INFO] 3D線分を {len(lines3d)} 本読み込みました: {lines3d_path}")
             except Exception as e:
                 print(f"[WARN] lines3d 読み込み失敗: {e}", file=sys.stderr)
@@ -268,6 +277,8 @@ def process_video(cfg: dict):
 
     if resize_width > 0:
         prev_frame = cv2.resize(prev_frame, (out_w, out_h))
+    if undist_map1 is not None:
+        prev_frame = cv2.remap(prev_frame, undist_map1, undist_map2, cv2.INTER_LINEAR)
 
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
     prev_kl = detect_lines(prev_gray, detector, cfg)
@@ -276,7 +287,7 @@ def process_video(cfg: dict):
     # 最初のフレームの姿勢を推定しておく（ループ内でキャッシュして再利用）
     pose_prev = get_pose(0)
     if pose_prev is None and pose_estimator is not None:
-        pose_prev = pose_estimator.estimate_pose(prev_gray, K_mat, dist_arr)
+        pose_prev = pose_estimator.estimate_pose(prev_gray, K_mat)
 
     # kl_idx → (p1_3d, p2_3d): 記述子マッチングで伝播する 2D-3D 対応テーブル
     prev_2d3d: dict[int, tuple] = {}
@@ -296,6 +307,8 @@ def process_video(cfg: dict):
 
         if resize_width > 0:
             curr_frame = cv2.resize(curr_frame, (out_w, out_h))
+        if undist_map1 is not None:
+            curr_frame = cv2.remap(curr_frame, undist_map1, undist_map2, cv2.INTER_LINEAR)
 
         curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
         curr_kl = detect_lines(curr_gray, detector, cfg)
@@ -338,7 +351,7 @@ def process_video(cfg: dict):
             pose_curr = get_pose(frame_idx)
             use_marker = marker_init_frames < 0 or frame_idx < marker_init_frames
             if pose_curr is None and pose_estimator is not None and use_marker:
-                pose_curr = pose_estimator.estimate_pose(curr_gray, K_mat, dist_arr)
+                pose_curr = pose_estimator.estimate_pose(curr_gray, K_mat)
 
             # Step 2: 幾何学的マッチングで curr_2d3d を補完（幾何由来のみ geom_2d3d に記録）
             geom_2d3d: dict[int, tuple] = {}

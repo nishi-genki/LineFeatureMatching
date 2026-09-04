@@ -21,6 +21,10 @@ marker_pose.py
 4点の平面配置でも合成データ200試行で反転0件を確認済み）。
 GOOPPnPL が使えない場合は solvePnP 系にフォールバック。
 
+歪み補正: フレーム側が undistort 済みである前提のため、ここでは歪み補正
+を行わない（dist は None で呼ぶ）。歪み補正前のフレームを渡す場合のみ
+dist に係数を渡せば従来通り点単位で補正する。
+
 .dat フォーマット:
     4行、各行タブまたはスペース区切りの x y z
     順序: [左上, 右上, 右下, 左下]  (C++ coords[0..3])
@@ -120,11 +124,12 @@ class MarkerPoseEstimator:
         self,
         frame_gray: np.ndarray,
         K: np.ndarray,
-        dist: np.ndarray,
+        dist: Optional[np.ndarray] = None,
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """
         フレームからマーカーを検出し、カメラ姿勢 (R 3x3, t 3-vec) を返す。
         マーカーが見つからない場合は None。
+        dist: 歪み係数。None ならフレームは undistort 済みとして扱う。
         """
         if self._aruco_detector is not None:
             return self._estimate_pose_aruco(frame_gray, K, dist)
@@ -134,7 +139,7 @@ class MarkerPoseEstimator:
         self,
         frame_gray: np.ndarray,
         K: np.ndarray,
-        dist: np.ndarray,
+        dist: Optional[np.ndarray] = None,
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """ArUco の4隅を直接検出して姿勢を推定する（誤対応が原理的に無い）。"""
         corners, ids, _ = self._aruco_detector.detectMarkers(frame_gray)
@@ -148,7 +153,7 @@ class MarkerPoseEstimator:
         obj_pts = self._obj_pts
 
         K64    = K.astype(np.float64)
-        dist64 = dist.astype(np.float64)
+        dist64 = None if dist is None else dist.astype(np.float64)
 
         pose = self._goppnpl_pose(obj_pts, img_pts, K64, dist64)
         if pose is not None:
@@ -168,7 +173,7 @@ class MarkerPoseEstimator:
         self,
         frame_gray: np.ndarray,
         K: np.ndarray,
-        dist: np.ndarray,
+        dist: Optional[np.ndarray] = None,
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """AKAZE特徴点マッチングで姿勢を推定する（自然画像マーカー用）。"""
         kps, descs = self._detector.detectAndCompute(frame_gray, None)
@@ -191,7 +196,7 @@ class MarkerPoseEstimator:
             img_pts.append(kps[m.trainIdx].pt)
 
         K64   = K.astype(np.float64)
-        dist64 = dist.astype(np.float64)
+        dist64 = None if dist is None else dist.astype(np.float64)
 
         obj_arr = np.array(Pp,      dtype=np.float32)
         img_arr = np.array(img_pts, dtype=np.float32)
@@ -220,9 +225,9 @@ class MarkerPoseEstimator:
     @staticmethod
     def _goppnpl_pose(
         obj_pts: np.ndarray,      # (N,3) インライア3D点
-        img_pts: np.ndarray,      # (N,2) インライア画像点（歪みあり）
+        img_pts: np.ndarray,      # (N,2) インライア画像点
         K: np.ndarray,
-        dist: np.ndarray,
+        dist: Optional[np.ndarray] = None,
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """GOOPPnPL（点特徴）で姿勢を推定する。失敗時は None。
 
@@ -232,8 +237,9 @@ class MarkerPoseEstimator:
         if not _GOPPNPL_AVAILABLE:
             return None
 
-        # 歪み補正して正規化座標へ。i_Pp は C++ 側で正規化され視線方向として
-        # のみ使われるため、(x_n, y_n, 1) を渡せば fx≠fy でも厳密。
+        # 正規化座標へ変換（dist が None ならフレーム側で undistort 済みとして
+        # K の逆変換のみ行う）。i_Pp は C++ 側で正規化され視線方向としてのみ
+        # 使われるため、(x_n, y_n, 1) を渡せば fx≠fy でも厳密。
         und = cv2.undistortPoints(img_pts.reshape(-1, 1, 2), K, dist).reshape(-1, 2)
 
         Pp   = [obj_pts[i].copy() for i in range(len(obj_pts))]
