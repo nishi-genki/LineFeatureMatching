@@ -21,6 +21,12 @@
       "min_length": 30,
       "LineFitErrorThreshold": 1.0,
       "MaxDistanceBetweenTwoLines": 6.0
+    },
+    "merge": {
+      "enable": false,
+      "angle_th_deg": 3.0,
+      "perp_dist_th_px": 4.0,
+      "gap_th_px": 20.0
     }
   },
   "descriptor": {},

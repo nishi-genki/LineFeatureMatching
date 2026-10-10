@@ -165,6 +165,7 @@ def process_video(cfg: dict):
     dist_arr = None
     undist_map1 = None
     undist_map2 = None
+    undist_valid_mask = None
     min_line_corr = int(lm_cfg.get("min_lines", 3))
     marker_init_frames = int(proj_cfg.get("marker_init_frames", -1))
 
@@ -197,6 +198,15 @@ def process_video(cfg: dict):
         # ピンホール前提になる）。変換マップは解像度分の1回だけ計算して使い回す。
         undist_map1, undist_map2 = cv2.initUndistortRectifyMap(
             K_mat, dist_arr, None, K_mat, img_size, cv2.CV_32FC1
+        )
+        # 実ソースが存在する画素=255 のマスク。BORDER_REPLICATE で滑らかに
+        # 埋められる無効領域（実データが無く捏造された範囲）を検出線分の
+        # クリップに使う（detect_lines の valid_mask 引数）。
+        _mask_w, _mask_h = img_size
+        undist_valid_mask = cv2.remap(
+            np.full((_mask_h, _mask_w), 255, dtype=np.uint8),
+            undist_map1, undist_map2, cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
         )
         print("[INFO] フレーム歪み補正を有効化（cv2.remap、K・dist は camera 設定を使用）")
 
@@ -278,10 +288,11 @@ def process_video(cfg: dict):
     if resize_width > 0:
         prev_frame = cv2.resize(prev_frame, (out_w, out_h))
     if undist_map1 is not None:
-        prev_frame = cv2.remap(prev_frame, undist_map1, undist_map2, cv2.INTER_LINEAR)
+        prev_frame = cv2.remap(prev_frame, undist_map1, undist_map2, cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REPLICATE)
 
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    prev_kl = detect_lines(prev_gray, detector, cfg)
+    prev_kl = detect_lines(prev_gray, detector, cfg, valid_mask=undist_valid_mask)
     prev_kl, prev_desc = describe_lines(prev_gray, prev_kl, descriptor) if stage >= 2 else (prev_kl, None)
 
     # 最初のフレームの姿勢を推定しておく（ループ内でキャッシュして再利用）
@@ -308,10 +319,11 @@ def process_video(cfg: dict):
         if resize_width > 0:
             curr_frame = cv2.resize(curr_frame, (out_w, out_h))
         if undist_map1 is not None:
-            curr_frame = cv2.remap(curr_frame, undist_map1, undist_map2, cv2.INTER_LINEAR)
+            curr_frame = cv2.remap(curr_frame, undist_map1, undist_map2, cv2.INTER_LINEAR,
+                                   borderMode=cv2.BORDER_REPLICATE)
 
         curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-        curr_kl = detect_lines(curr_gray, detector, cfg)
+        curr_kl = detect_lines(curr_gray, detector, cfg, valid_mask=undist_valid_mask)
         curr_kl, curr_desc = describe_lines(curr_gray, curr_kl, descriptor) if stage >= 2 else (curr_kl, None)
 
         # ── Stage 2: LBD フレーム間対応 ──────────────────────────────

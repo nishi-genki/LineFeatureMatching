@@ -1,7 +1,7 @@
 {
   "io": {
     "input": "video/IMG_6062.MOV",
-    "output": "output/video/newscene_imagecorrection_6062.mp4",
+    "output": "output/video/newscene_imagecorrection_merge_6062.mp4",
     "csv": "",
     "fallback_fps": 30,
     "use_fixed_seed": false,
@@ -21,6 +21,12 @@
       "min_length": 80,
       "LineFitErrorThreshold": 1.0,
       "MaxDistanceBetweenTwoLines": 6.0
+    },
+    "merge": {
+      "enable": true,
+      "angle_th_deg": 3.0,
+      "perp_dist_th_px": 4.0,
+      "gap_th_px": 20.0
     }
   },
   "descriptor": {},

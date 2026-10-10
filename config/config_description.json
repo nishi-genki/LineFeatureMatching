@@ -24,7 +24,14 @@
       "_description": "EDLines のパラメータ",
       "min_length": "検出する線分の最小長さ（ピクセル）",
       "LineFitErrorThreshold": "直線フィッティングの許容誤差",
-      "MaxDistanceBetweenTwoLines": "2つの線分を統合する最大距離（ピクセル）"
+      "MaxDistanceBetweenTwoLines": "EDLines内部のエッジ連結時に2つの線分を統合する最大距離（ピクセル）。detection.merge とは別（検出アルゴリズム内部の低レベル処理）"
+    },
+    "merge": {
+      "_description": "検出後の近傍線分統合。歪み・遮蔽等で1本のエッジが複数の断片に分かれて検出されるのを、長さ・本数フィルタの前に1本へ統合してから防ぐ（太く長い線分＝フレーム間対応の安定化が目的）",
+      "enable": "統合処理を有効にするか",
+      "angle_th_deg": "統合対象とみなす2線分の角度差の上限 [度]",
+      "perp_dist_th_px": "統合対象とみなす2線分間の垂直距離の上限 [px]（同一直線上とみなす許容誤差）",
+      "gap_th_px": "統合対象とみなす2線分の直線方向の隙間の上限 [px]"
     }
   },
   "descriptor": {
