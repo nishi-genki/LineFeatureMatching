@@ -2,7 +2,7 @@
   "io": {
     "input": "video/IMG_6062.MOV",
     "output": "output/video/newscene_imagecorrection_merge_6062.mp4",
-    "csv": "",
+    "csv": "output/IMG_6062_matches.csv",
     "fallback_fps": 30,
     "use_fixed_seed": false,
     "random_seed": 0
@@ -40,6 +40,12 @@
     }
   },
   "visualization": {
+    "mode": "side_by_side",
+    "projection_only_color": [0, 0, 0],
+    "correspondence_only_color": [0, 0, 255],
+    "correspondence_outlier_color": [255, 0, 0],
+    "show_world_axes": true,
+    "world_axes_length": 0.5,
     "max_draw": 200,
     "only_matched": false,
     "line_thickness": 2,
@@ -78,8 +84,9 @@
     "overlap_th": 0.2,
     "min_lines": 3,
     "sigma_max_px": 20.0,
-    "robust_method": "ransac",
+    "robust_method": "none",
     "ransac_thresh_px": 15.0,
+    "min_sample_angle_deg": 15.0,
     "y_down_constraint": true,
     "max_rot_jump_deg": 20.0,
     "max_trans_jump": -1.0

@@ -40,6 +40,12 @@
     }
   },
   "visualization": {
+    "mode": "side_by_side",
+    "projection_only_color": [0, 0, 0],
+    "correspondence_only_color": [0, 0, 255],
+    "correspondence_outlier_color": [255, 0, 0],
+    "show_world_axes": false,
+    "world_axes_length": 1.0,
     "max_draw": 60,
     "only_matched": false,
     "line_thickness": 2,
@@ -80,6 +86,7 @@
     "sigma_max_px": 20.0,
     "robust_method": "magsac",
     "ransac_thresh_px": 10.0,
+    "min_sample_angle_deg": 15.0,
     "y_down_constraint": true,
     "max_rot_jump_deg": -1.0,
     "max_trans_jump": -1.0

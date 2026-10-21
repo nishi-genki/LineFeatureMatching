@@ -19,7 +19,14 @@ import numpy as np
 
 from detector import build_detectors, detect_lines, describe_lines
 from matcher import match_lines, is_match_consistent
-from writer import MatchCSVWriter, draw_matches_side_by_side
+from writer import (
+    MatchCSVWriter,
+    draw_matches_side_by_side,
+    draw_current_frame,
+    draw_projection_only,
+    draw_correspondence_only,
+    draw_world_axes,
+)
 
 # ─────────────────────────────────────────────
 # 設定読み込み
@@ -151,7 +158,13 @@ def process_video(cfg: dict):
         out_w, out_h = resize_width, int(h_orig * scale_r)
     else:
         out_w, out_h = w_orig, h_orig
-    canvas_w = out_w * 2
+
+    # 出力形式: "side_by_side"(既定, 前後フレーム並べ) / "current_only"(現在フレームのみ)
+    # / "projection_only"(現在フレーム+投影線分のみ、他の注釈なし)
+    vis_mode = cfg["visualization"].get("mode", "side_by_side")
+    canvas_w = out_w * 2 if vis_mode == "side_by_side" else out_w
+    show_world_axes = bool(cfg["visualization"].get("show_world_axes", False))
+    world_axes_length = float(cfg["visualization"].get("world_axes_length", 1.0))
 
     print(f"[INFO] 入力: {input_path}  ({w_orig}x{h_orig}, {fps:.1f}fps, {total}frames)")
     print(f"[INFO] 出力解像度: {canvas_w}x{out_h}")
@@ -163,6 +176,15 @@ def process_video(cfg: dict):
     line_matcher = None
     K_mat = None
     dist_arr = None
+    # 2D-3D対応ログ（どの検出線分がどの3D線分[lines3d.csv の行番号]に対応したか）
+    corr_diag: list[dict] = []
+    # フレーム間追跡ログ（検出線分のうちLBDで引き継げた割合・新規検出の割合）
+    track_diag: list[dict] = []
+    # 姿勢安定性ログ（前フレームからのカメラ移動量・回転量。先行研究と同様の安定性評価用）
+    stability_diag: list[dict] = []
+
+    def _lines3d_idx(p1, p2) -> int:
+        return -1
     undist_map1 = None
     undist_map2 = None
     undist_valid_mask = None
@@ -177,7 +199,7 @@ def process_video(cfg: dict):
         from projector import LineProjector, ProjectedLine, load_lines3d_csv
         from marker_pose import MarkerPoseEstimator
         from line_matcher import LineMatcher2D3D
-        from line_pose import estimate_from_lines, _rotation_angle_deg
+        from line_pose import estimate_from_lines, _rotation_angle_deg, _line_residual
 
         cam_cfg = cfg["camera"]
         fx, fy = cam_cfg["fx"], cam_cfg["fy"]
@@ -202,6 +224,13 @@ def process_video(cfg: dict):
         # 実ソースが存在する画素=255 のマスク。BORDER_REPLICATE で滑らかに
         # 埋められる無効領域（実データが無く捏造された範囲）を検出線分の
         # クリップに使う（detect_lines の valid_mask 引数）。
+        # 【注】BORDER_REPLICATEとマスククリップは別の問題への対策で重複しない:
+        #   BORDER_REPLICATE: 黒/実画像の境界という「画像の枠そのもの」が
+        #     強いエッジとして検出されるのを防ぐ（境界を無くす）
+        #   マスククリップ: 本物のエッジが無効領域側へ誤って延長検出される
+        #     のを防ぐ（検出後に捏造部分を切り捨てる）
+        #   黒塗りのままクリップだけ行うと、境界線自体が有効領域側の線として
+        #     検出される問題は防げない（実測で確認済み）。
         _mask_w, _mask_h = img_size
         undist_valid_mask = cv2.remap(
             np.full((_mask_h, _mask_w), 255, dtype=np.uint8),
@@ -218,6 +247,13 @@ def process_video(cfg: dict):
                 lines3d = load_lines3d_csv(lines3d_path)
                 projector = LineProjector(fx, fy, cx, cy, lines3d, img_size)
                 print(f"[INFO] 3D線分を {len(lines3d)} 本読み込みました: {lines3d_path}")
+
+                def _lines3d_idx(p1, p2, _lines3d=lines3d) -> int:
+                    """3D端点から lines3d.csv 上の行番号（0始まり）を逆引きする（ログ用）。"""
+                    for _i, (_p1, _p2) in enumerate(_lines3d):
+                        if np.allclose(_p1, p1) and np.allclose(_p2, p2):
+                            return _i
+                    return -1
             except Exception as e:
                 print(f"[WARN] lines3d 読み込み失敗: {e}", file=sys.stderr)
 
@@ -357,6 +393,8 @@ def process_video(cfg: dict):
         pose_curr: tuple | None = None
         proj_prev: list = []
         proj_curr: list = []
+        # RANSAC/MAGSAC で外れ値として除外された kl_idx（可視化・ログ用）
+        outlier_kl_indices: set[int] = set()
 
         if stage >= 3:
             # Step 1: 姿勢取得（rt_csv > マーカー推定(初期フレームのみ) > 前フレーム引継ぎ）
@@ -396,12 +434,18 @@ def process_video(cfg: dict):
                         for idx, (p1, p2) in curr_2d3d.items()
                     ]
                     try:
-                        refined = estimate_from_lines(R_init, corr_for_pose, K_mat,
-                                                      min_lines=min_line_corr,
-                                                      sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
-                                                      ransac_thresh_px=float(lm_cfg.get("ransac_thresh_px", 10.0)),
-                                                      robust_method=lm_cfg.get("robust_method", "magsac"),
-                                                      y_down_constraint=bool(lm_cfg.get("y_down_constraint", True)))
+                        refined, inlier_rel_idx = estimate_from_lines(
+                            R_init, corr_for_pose, K_mat,
+                            min_lines=min_line_corr,
+                            sigma_max_px=float(lm_cfg.get("sigma_max_px", 20.0)),
+                            ransac_thresh_px=float(lm_cfg.get("ransac_thresh_px", 10.0)),
+                            robust_method=lm_cfg.get("robust_method", "magsac"),
+                            y_down_constraint=bool(lm_cfg.get("y_down_constraint", True)),
+                            return_inliers=True,
+                            min_sample_angle_deg=float(lm_cfg.get("min_sample_angle_deg", 15.0)))
+                        if refined is not None and inlier_rel_idx is not None:
+                            inlier_kl_set = {corr_for_pose[i][2] for i in inlier_rel_idx}
+                            outlier_kl_indices = set(curr_2d3d.keys()) - inlier_kl_set
                         # ── 姿勢ジャンプゲート ──────────────────────
                         # 前フレーム姿勢からの回転・カメラ位置の跳びが物理的に
                         # あり得ない大きさなら棄却する（反転解・破綻解の入口対策）。
@@ -429,21 +473,87 @@ def process_video(cfg: dict):
                 if pose_curr is not None:
                     proj_curr = projector.project_lines(*pose_curr)
 
+            # ── 2D-3D対応ログ: どの検出線分がどの3D線分に対応したか ──────
+            if projector is not None and pose_curr is not None:
+                R_c, t_c = pose_curr
+                for kl_idx, (p1, p2) in curr_2d3d.items():
+                    kl = curr_kl[kl_idx]
+                    src = "LBD" if kl_idx in tracked_kl_indices else ("GEOM" if kl_idx in geom_2d3d else "?")
+                    proj_tmp = ProjectedLine(p1_3d=p1, p2_3d=p2, pt1_2d=(0.0, 0.0), pt2_2d=(0.0, 0.0))
+                    corr_diag.append({
+                        "frame_idx": frame_idx,
+                        "kl_idx": kl_idx,
+                        "line3d_idx": _lines3d_idx(p1, p2),
+                        "source": src,
+                        "kl_sx": round(float(kl.startPointX), 2),
+                        "kl_sy": round(float(kl.startPointY), 2),
+                        "kl_ex": round(float(kl.endPointX), 2),
+                        "kl_ey": round(float(kl.endPointY), 2),
+                        "kl_length": round(float(kl.lineLength), 2),
+                        "p1_3d_x": p1[0], "p1_3d_y": p1[1], "p1_3d_z": p1[2],
+                        "p2_3d_x": p2[0], "p2_3d_y": p2[1], "p2_3d_z": p2[2],
+                        "residual_px": round(_line_residual(proj_tmp, kl, R_c, t_c, K_mat), 3),
+                        "robust_outlier": kl_idx in outlier_kl_indices,
+                    })
+
         geom_kl_indices = set(geom_2d3d.keys()) - tracked_kl_indices if stage >= 3 else set()
-        canvas = draw_matches_side_by_side(
-            prev_frame,
-            prev_kl,
-            curr_frame,
-            curr_kl,
-            matches,
-            cfg,
-            proj_lines1=proj_prev,
-            proj_lines2=proj_curr,
-            tracked_kl_indices1=tracked_prev_indices,
-            tracked_kl_indices2=tracked_kl_indices,
-            geom_kl_indices2=geom_kl_indices,
-            stage=stage,
-        )
+
+        # ── フレーム間追跡ログ: 検出線分のうちLBD引き継ぎ/新規検出の内訳 ──
+        track_diag.append({
+            "frame_idx": frame_idx,
+            "n_detected": len(curr_kl),
+            "n_lbd_matches": len(matches),
+            "n_tracked_2d3d": len(tracked_kl_indices),
+            "n_geom_2d3d_new": len(geom_kl_indices),
+            "n_curr_2d3d": len(curr_2d3d),
+        })
+
+        if vis_mode == "current_only":
+            canvas = draw_current_frame(
+                curr_frame,
+                curr_kl,
+                cfg,
+                proj_lines=proj_curr,
+                tracked_kl_indices=tracked_kl_indices,
+                geom_kl_indices=geom_kl_indices,
+                stage=stage,
+            )
+        elif vis_mode == "projection_only":
+            canvas = draw_projection_only(curr_frame, proj_curr, cfg)
+        elif vis_mode == "correspondence_only":
+            canvas = draw_correspondence_only(
+                curr_frame,
+                curr_kl,
+                cfg,
+                tracked_kl_indices=tracked_kl_indices,
+                geom_kl_indices=geom_kl_indices,
+                outlier_kl_indices=outlier_kl_indices,
+            )
+        else:
+            canvas = draw_matches_side_by_side(
+                prev_frame,
+                prev_kl,
+                curr_frame,
+                curr_kl,
+                matches,
+                cfg,
+                proj_lines1=proj_prev,
+                proj_lines2=proj_curr,
+                tracked_kl_indices1=tracked_prev_indices,
+                tracked_kl_indices2=tracked_kl_indices,
+                geom_kl_indices2=geom_kl_indices,
+                stage=stage,
+            )
+
+        # ── 世界座標軸の描画（精度の目視確認用。先行研究に合わせたもの）──
+        if show_world_axes and K_mat is not None:
+            if vis_mode == "side_by_side":
+                if pose_prev is not None:
+                    draw_world_axes(canvas, *pose_prev, K_mat, length=world_axes_length)
+                if pose_curr is not None:
+                    draw_world_axes(canvas, *pose_curr, K_mat, length=world_axes_length, x_offset=out_w)
+            elif pose_curr is not None:
+                draw_world_axes(canvas, *pose_curr, K_mat, length=world_axes_length)
 
         if canvas.shape[1] != canvas_w or canvas.shape[0] != out_h:
             print(f"[WARN] フレームサイズ不一致: {canvas.shape[1]}x{canvas.shape[0]} → {canvas_w}x{out_h}")
@@ -459,6 +569,18 @@ def process_video(cfg: dict):
                 f"  [{frame_idx:>5}/{total-1}] {pct:5.1f}%  "
                 f"lines={len(prev_kl)}/{len(curr_kl)}  matches={len(matches)}"
             )
+
+        # ── 姿勢安定性ログ: 前フレームからのカメラ移動量・回転量 ──────
+        if pose_prev is not None and pose_curr is not None:
+            R_p, t_p = pose_prev
+            R_c, t_c = pose_curr
+            cam_p = -np.asarray(R_p, dtype=np.float64).T @ np.asarray(t_p, dtype=np.float64).flatten()
+            cam_c = -np.asarray(R_c, dtype=np.float64).T @ np.asarray(t_c, dtype=np.float64).flatten()
+            stability_diag.append({
+                "frame_idx": frame_idx,
+                "trans_delta": round(float(np.linalg.norm(cam_c - cam_p)), 5),
+                "rot_delta_deg": round(_rotation_angle_deg(R_c, R_p), 4),
+            })
 
         prev_frame, prev_gray = curr_frame, curr_gray
         prev_kl, prev_desc = curr_kl, curr_desc
@@ -496,6 +618,42 @@ def process_video(cfg: dict):
             print(f"[INFO] GOOPPnPL 解診断ログ → {diag_path}  ({n_calls} 呼び出し)")
     except Exception as e:
         print(f"[WARN] GOOPPnPL 解診断ログ出力失敗: {e}", file=sys.stderr)
+
+    # ── 2D-3D対応ログの書き出し ────────────────────────────────────
+    try:
+        if corr_diag:
+            diag_path = frames_dir / "corr_diag.csv"
+            with open(diag_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(corr_diag[0].keys()))
+                w.writeheader()
+                w.writerows(corr_diag)
+            print(f"[INFO] 2D-3D対応ログ → {diag_path}  ({len(corr_diag)} 件)")
+    except Exception as e:
+        print(f"[WARN] 2D-3D対応ログ出力失敗: {e}", file=sys.stderr)
+
+    # ── フレーム間追跡ログの書き出し ────────────────────────────────
+    try:
+        if track_diag:
+            diag_path = frames_dir / "track_diag.csv"
+            with open(diag_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(track_diag[0].keys()))
+                w.writeheader()
+                w.writerows(track_diag)
+            print(f"[INFO] フレーム間追跡ログ → {diag_path}  ({len(track_diag)} フレーム)")
+    except Exception as e:
+        print(f"[WARN] フレーム間追跡ログ出力失敗: {e}", file=sys.stderr)
+
+    # ── 姿勢安定性ログの書き出し ────────────────────────────────────
+    try:
+        if stability_diag:
+            diag_path = frames_dir / "stability_diag.csv"
+            with open(diag_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(stability_diag[0].keys()))
+                w.writeheader()
+                w.writerows(stability_diag)
+            print(f"[INFO] 姿勢安定性ログ → {diag_path}  ({len(stability_diag)} フレーム)")
+    except Exception as e:
+        print(f"[WARN] 姿勢安定性ログ出力失敗: {e}", file=sys.stderr)
 
     avg = total_matches / max(frame_idx - 1, 1)
     print(f"\n[DONE] 処理フレーム数: {frame_idx - 1}")

@@ -50,6 +50,12 @@
   },
   "visualization": {
     "_description": "出力動画の描画設定",
+    "mode": "出力形式。'side_by_side'=前後フレームを横並び（既定）/ 'current_only'=現在フレームのみ（検出線分・投影線分・ステージ表示）/ 'projection_only'=現在フレームに投影線分のみ（他の注釈なし）/ 'correspondence_only'=現在フレームに姿勢推定（2D-3D対応）に使われた検出線分のみ（投影線分・非対応の検出線分・注釈なし）",
+    "projection_only_color": "mode='projection_only' のときの投影線分の色 [B,G,R]（既定: 赤）。projection.color（他モードで使用）とは独立",
+    "correspondence_only_color": "mode='correspondence_only' のときの対応線分の色 [B,G,R]（既定: 赤）。RANSAC/MAGSACでインライア採用された（実際に姿勢推定に使われた）線分の色",
+    "correspondence_outlier_color": "mode='correspondence_only' のときの、RANSAC/MAGSACが外れ値として除外した線分の色 [B,G,R]（既定: 青）",
+    "show_world_axes": "true の場合、推定姿勢に基づいて世界座標系の原点とX/Y/Z軸を画像に投影して描画する（精度の目視確認用）。色はX=赤,Y=緑,Z=青固定（cv2.drawFrameAxesと同じ配色）",
+    "world_axes_length": "世界座標軸を描画する際の軸の長さ（lines3d.csv と同じ単位, 通常メートル）",
     "max_draw": "描画するマッチ線分の最大数",
     "only_matched": "true の場合、マッチした線分のみ描画する",
     "line_thickness": "検出線分の描画太さ（ピクセル）",
@@ -94,6 +100,7 @@
     "sigma_max_px": "MAGSAC++ のノイズスケール上限 [px]。ソフト重み exp(-e²/2σ²) の基準スケール。小さいほど厳しい判定。",
     "robust_method": "ロバスト推定手法の選択。\"magsac\"=MAGSAC++, \"ransac\"=RANSAC, \"none\"=ロバスト推定なし",
     "ransac_thresh_px": "RANSACのインライア判定閾値 [px]。検出線分端点の投影線分への垂線距離がこの値以下をインライアとする（robust_method=\"ransac\" のときのみ有効）",
+    "min_sample_angle_deg": "RANSAC/MAGSACの最小サンプル（min_lines本）が全ペアでこの角度[度]未満しか離れていない場合、方向が偏った退化サンプルとして候補生成をスキップする。少数派の長い基準線が多数派の平行線に外れ値扱いされる問題の対策。0以下で無効化",
     "y_down_constraint": "GOOPPnPLの候補解選択で「カメラY軸が下向き（R[1,2]<0）」の解のみ許可する（鏡映反転解対策）。ワールドZ軸が上向き・カメラを大きく傾けない構図が前提。前提が崩れる撮影では false にする",
     "max_rot_jump_deg": "姿勢ジャンプゲート: 前フレーム姿勢からの回転差がこの値（度）を超える推定結果を棄却し前フレーム姿勢を維持する。反転解・破綻解の混入防止。0以下で無効",
     "max_trans_jump": "姿勢ジャンプゲート: 前フレームからのカメラ中心の移動量がこの値（3Dモデルの単位系）を超える推定結果を棄却する。0以下で無効"

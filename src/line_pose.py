@@ -193,6 +193,35 @@ def _weighted_median(values: list[float], weights: list[float]) -> float:
     return paired[-1][0]
 
 
+def _sample_is_degenerate(sample: list, min_angle_deg: float = 15.0) -> bool:
+    """最小サンプル（3本の対応）の3D線分方向が全ペアでほぼ平行（退化構成）かどうかを判定する。
+
+    近い方向の線分ばかりを引いた最小サンプルは、その方向に沿った並進・回転成分が
+    不定に近い（開口問題）姿勢候補を生みやすい。そのような候補は少数派の長い基準線
+    （向きの異なる線分）を「外れ値」として誤って弾き出す主要因になるため、
+    候補生成の時点で評価対象から除外する。min_angle_deg が0以下なら常に False（無効化）。
+    """
+    if min_angle_deg <= 0:
+        return False
+    dirs = []
+    for proj, _kl, _idx in sample:
+        d = np.asarray(proj.p2_3d, dtype=np.float64) - np.asarray(proj.p1_3d, dtype=np.float64)
+        norm = np.linalg.norm(d)
+        if norm < 1e-9:
+            continue
+        dirs.append(d / norm)
+    if len(dirs) < 2:
+        return True
+    th = math.radians(min_angle_deg)
+    for i in range(len(dirs)):
+        for j in range(i + 1, len(dirs)):
+            cos_a = abs(float(np.dot(dirs[i], dirs[j])))
+            ang = math.acos(min(1.0, max(-1.0, cos_a)))
+            if ang > th:
+                return False
+    return True
+
+
 def _magsac_inliers(
     correspondences: list,
     K: np.ndarray,
@@ -202,6 +231,7 @@ def _magsac_inliers(
     use_direction: bool = True,
     R_ref: "Optional[np.ndarray]" = None,
     y_down_constraint: bool = True,
+    min_sample_angle_deg: float = 15.0,
 ) -> list[int]:
     """
     MAGSAC (d=2) でインライアインデックスを返す。
@@ -222,6 +252,8 @@ def _magsac_inliers(
     for _ in range(n_iter):
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
+        if _sample_is_degenerate(sample, min_sample_angle_deg):
+            continue
 
         pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref,
                                    y_down_constraint)
@@ -318,6 +350,7 @@ def _ransac_inliers(
     use_direction: bool = True,
     R_ref: "Optional[np.ndarray]" = None,
     y_down_constraint: bool = True,
+    min_sample_angle_deg: float = 15.0,
 ) -> list[int]:
     """
     RANSACでインライアインデックスを返す。
@@ -333,6 +366,8 @@ def _ransac_inliers(
     for _ in range(n_iter):
         sample_idx = random.sample(range(n), min_lines)
         sample = [correspondences[i] for i in sample_idx]
+        if _sample_is_degenerate(sample, min_sample_angle_deg):
+            continue
 
         pose = _estimate_pose_core(sample, K, min_lines, use_direction, R_ref,
                                    y_down_constraint)
@@ -547,7 +582,9 @@ def estimate_from_lines(
     sigma_max_px:     float = 20.0,
     ransac_thresh_px: float = 10.0,
     y_down_constraint: bool = True,
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    return_inliers:   bool  = False,
+    min_sample_angle_deg: float = 15.0,
+) -> "Optional[tuple[np.ndarray, np.ndarray]] | tuple[Optional[tuple[np.ndarray, np.ndarray]], Optional[list[int]]]":
     """
     2D-3D 線分対応から姿勢 (R, t) を推定する。
 
@@ -560,11 +597,22 @@ def estimate_from_lines(
     ransac_thresh_px : RANSACのインライア判定閾値 [px]
     y_down_constraint: カメラY軸が常に下向きというリグ前提で候補解を
                        フィルタする（鏡映反転解対策）。構図が変わる場合は無効化
+    return_inliers   : True の場合 (pose, inlier_idx) を返す。inlier_idx は
+                       correspondences 内でのインデックスのリスト
+                       （robust_method="none" や候補不足時は全件がインライア扱い）。
+                       pose が None の場合 inlier_idx も None。
+    min_sample_angle_deg: RANSAC/MAGSACの最小サンプル（3本）が全ペアでこの角度
+                       未満しか離れていない場合、方向の偏った退化サンプルとして
+                       候補生成をスキップする（少数派の長い基準線が多数派の
+                       平行線に外れ値扱いされる問題の対策）。0以下で無効化。
     """
+    def _ret(pose, inlier_idx):
+        return (pose, inlier_idx) if return_inliers else pose
+
     if not _GOPPNPL_AVAILABLE:
-        return None
+        return _ret(None, None)
     if len(correspondences) < min_lines:
-        return None
+        return _ret(None, None)
 
     R_ref = None
     if R_init is not None:
@@ -572,20 +620,24 @@ def estimate_from_lines(
         if R_arr.shape == (3, 3):
             R_ref = R_arr
 
-    if robust_method != "none" and len(correspondences) > min_lines:
-        n_iter = _compute_magsac_iters(len(correspondences))
+    n = len(correspondences)
+    inlier_idx = list(range(n))
+    if robust_method != "none" and n > min_lines:
+        n_iter = _compute_magsac_iters(n)
         if robust_method == "magsac":
-            inlier_idx = _magsac_inliers(
+            found_idx = _magsac_inliers(
                 correspondences, K, min_lines, n_iter, sigma_max_px, use_direction,
-                R_ref, y_down_constraint,
+                R_ref, y_down_constraint, min_sample_angle_deg,
             )
         else:  # ransac
-            inlier_idx = _ransac_inliers(
+            found_idx = _ransac_inliers(
                 correspondences, K, min_lines, n_iter, ransac_thresh_px, use_direction,
-                R_ref, y_down_constraint,
+                R_ref, y_down_constraint, min_sample_angle_deg,
             )
-        if inlier_idx:
-            correspondences = [correspondences[i] for i in inlier_idx]
+        if found_idx:
+            inlier_idx = found_idx
 
-    return _estimate_pose_core(correspondences, K, min_lines, use_direction, R_ref,
+    filtered = [correspondences[i] for i in inlier_idx]
+    pose = _estimate_pose_core(filtered, K, min_lines, use_direction, R_ref,
                                y_down_constraint, collect_diag=True)
+    return _ret(pose, inlier_idx if pose is not None else None)
