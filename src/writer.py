@@ -140,34 +140,47 @@ def draw_correspondence_only(
     tracked_kl_indices: set | None = None,
     geom_kl_indices: set | None = None,
     outlier_kl_indices: set | None = None,
+    line3d_labels: dict | None = None,
 ) -> np.ndarray:
     """現在フレームに、姿勢推定（2D-3D対応）に使われた検出線分だけを描画する
     （対応を持たない検出線分・投影線分・テキスト注釈なし）。
     outlier_kl_indices を渡すと、RANSAC/MAGSAC が最終的に外れ値として除外した
     線分を visualization.correspondence_outlier_color（既定: 青）で区別して描画する
     （それ以外＝実際に姿勢推定に使われた線分は correspondence_only_color、既定: 赤）。
-    tracked_kl_indices/geom_kl_indices を両方 None にすると全て同色で描画する。"""
+    tracked_kl_indices/geom_kl_indices を両方 None にすると全て同色で描画する。
+    line3d_labels（kl_idx -> lines3d.csv の行番号）を渡すと、各線分の中点に
+    対応する3D線分の番号を描画する（groundtruth_lines と同じ見た目）。"""
     canvas = frame.copy()
     vis_cfg = cfg.get("visualization", {})
     line_thickness = vis_cfg.get("line_thickness", 2)
+    font_scale = vis_cfg.get("text_font_scale", 0.6)
     color = tuple(vis_cfg.get("correspondence_only_color", [0, 0, 255]))
     outlier_color = tuple(vis_cfg.get("correspondence_outlier_color", [255, 0, 0]))
 
     tracked = tracked_kl_indices or set()
     geom    = geom_kl_indices    or set()
     outlier = outlier_kl_indices or set()
+    labels  = line3d_labels      or {}
     used = tracked | geom
 
+    font = cv2.FONT_HERSHEY_SIMPLEX
     for i in used:
         k = kl[i]
         line_color = outlier_color if i in outlier else color
+        sx, sy, ex, ey = k.startPointX, k.startPointY, k.endPointX, k.endPointY
         cv2.line(
             canvas,
-            (int(k.startPointX), int(k.startPointY)),
-            (int(k.endPointX), int(k.endPointY)),
+            (int(sx), int(sy)),
+            (int(ex), int(ey)),
             line_color,
             line_thickness,
         )
+        if i in labels:
+            label = str(labels[i])
+            mx, my = int((sx + ex) / 2), int((sy + ey) / 2)
+            (tw, th), _ = cv2.getTextSize(label, font, font_scale, 1)
+            cv2.rectangle(canvas, (mx - 1, my - th - 3), (mx + tw + 1, my + 2), (0, 0, 0), -1)
+            cv2.putText(canvas, label, (mx, my), font, font_scale, (0, 255, 255), 1, cv2.LINE_AA)
     return canvas
 
 
